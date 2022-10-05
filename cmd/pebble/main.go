@@ -343,6 +343,8 @@ func run() error {
 
 	_, clientConfig.Socket = getEnvPaths()
 
+	clientConfig.BaseURL = "http://" + clientConfig.Socket
+
 	cli, err := client.New(&clientConfig)
 	if err != nil {
 		return fmt.Errorf("cannot create client: %v", err)

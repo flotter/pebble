@@ -83,6 +83,13 @@ func unixDialer(socketPath string) func(string, string) (net.Conn, error) {
 	}
 }
 
+func tcpDialer(url string) func(string, string) (net.Conn, error) {
+	return func(_, _ string) (net.Conn, error) {
+
+		return net.Dial("tcp", url)
+	}
+}
+
 type doer interface {
 	Do(*http.Request) (*http.Response, error)
 }
@@ -150,7 +157,7 @@ func New(config *Config) (*Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("cannot parse base URL: %v", err)
 		}
-		transport = &http.Transport{DisableKeepAlives: config.DisableKeepAlive}
+		transport = &http.Transport{Dial: tcpDialer(config.Socket + ":8888"), DisableKeepAlives: config.DisableKeepAlive}
 		client = &Client{baseURL: *baseURL}
 	}
 

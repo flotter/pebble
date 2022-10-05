@@ -30,6 +30,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"regexp"
 
 	"gopkg.in/tomb.v2"
 
@@ -157,6 +158,12 @@ func (c *Command) canAccess(r *http.Request, user *userState) accessResult {
 
 	if user != nil && !c.AdminOnly {
 		// Authenticated users do anything not requiring explicit admin.
+		return accessOK
+	}
+
+	// Not possible to get remote uid for TCP connections
+	matched, _ := regexp.MatchString(`^127.0.0.1`, r.RemoteAddr)
+	if matched {
 		return accessOK
 	}
 
