@@ -343,7 +343,10 @@ func run() error {
 
 	_, clientConfig.Socket = getEnvPaths()
 
-	clientConfig.BaseURL = "http://" + clientConfig.Socket
+
+	if os.Getenv("PEBBLE_SOCKET") != "" {
+		clientConfig.BaseURL = "http://" + clientConfig.Socket
+	}
 
 	cli, err := client.New(&clientConfig)
 	if err != nil {

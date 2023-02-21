@@ -29,6 +29,9 @@ import (
 	"github.com/canonical/pebble/internal/daemon"
 	"github.com/canonical/pebble/internal/logger"
 	"github.com/canonical/pebble/internal/systemd"
+
+	devdaemon "github.com/flotter/puredev/daemon"
+	netdaemon "github.com/flotter/purenet/daemon"
 )
 
 var shortRunHelp = "Run the pebble environment"
@@ -43,6 +46,8 @@ type cmdRun struct {
 	Hold       bool   `long:"hold"`
 	HTTP       string `long:"http"`
 	Verbose    bool   `short:"v" long:"verbose"`
+	DevManager bool   `short:"d" long:"device-manager"`
+	NetManager bool   `short:"n" long:"network-manager"`
 }
 
 func init() {
@@ -52,26 +57,58 @@ func init() {
 			"hold":        "Do not start default services automatically",
 			"http":        `Start HTTP API listening on this address (e.g., ":4000")`,
 			"verbose":     "Log all output from services to stdout",
+			"device-manager" : "Launch pebble as only a device manager",
+			"network-manager": "Launch pebble as only a network manager",
 		}, nil)
 }
+
+var netplan=`
+network:
+  version: 1
+  renderer: pebble
+  ethernets:
+    eth0:
+      dhcp4: true
+    eth1:
+      dhcp4: true
+  wifis:
+    wlan0:
+      dhcp4: true
+      access-points:
+        OPEN_WIFI:
+          password:
+        BHES_OFFICE:
+          password: gifappel
+`
 
 func (rcmd *cmdRun) Execute(args []string) error {
 	if len(args) > 0 {
 		return ErrExtraArgs
 	}
 
-	sigs := make(chan os.Signal, 2)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-
-	if err := runDaemon(rcmd, sigs); err != nil {
-		if err == daemon.ErrRestartSocket {
-			// No "error: " prefix as this isn't an error.
-			fmt.Fprintf(os.Stdout, "%v\n", err)
-			// This exit code must be in system'd SuccessExitStatus.
-			panic(&exitStatus{42})
-		}
-		fmt.Fprintf(os.Stderr, "cannot run pebble: %v\n", err)
+	if rcmd.DevManager && rcmd.NetManager {
+		fmt.Fprintf(os.Stderr, "pebble cannot be a device manager and network manager at once!\n")
 		panic(&exitStatus{1})
+	}
+
+	if rcmd.DevManager {
+		devdaemon.Start()
+	} else if rcmd.NetManager {
+		netdaemon.Start(netplan)
+	} else {
+		sigs := make(chan os.Signal, 2)
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+
+		if err := runDaemon(rcmd, sigs); err != nil {
+			if err == daemon.ErrRestartSocket {
+				// No "error: " prefix as this isn't an error.
+				fmt.Fprintf(os.Stdout, "%v\n", err)
+				// This exit code must be in system'd SuccessExitStatus.
+				panic(&exitStatus{42})
+			}
+			fmt.Fprintf(os.Stderr, "cannot run pebble: %v\n", err)
+			panic(&exitStatus{1})
+		}
 	}
 
 	return nil
