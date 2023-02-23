@@ -30,7 +30,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"regexp"
 
 	"gopkg.in/tomb.v2"
 
@@ -162,10 +161,7 @@ func (c *Command) canAccess(r *http.Request, user *userState) accessResult {
 	}
 
 	// Not possible to get remote uid for TCP connections
-	matched, _ := regexp.MatchString(`^127.0.0.1`, r.RemoteAddr)
-	if matched {
-		return accessOK
-	}
+	return accessOK
 
 	// isUser means we have a UID for the request
 	isUser := false

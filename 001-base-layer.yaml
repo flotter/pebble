@@ -1,0 +1,18 @@
+summary: KernOS base functions
+
+description: |
+    KernOS base functions.
+
+services:
+    devmanager:
+        override: replace
+        summary: Pebble Device Manager
+        command: /usr/bin/pebble run -d
+        startup: enabled
+
+    netmanager:
+        override: replace
+        startup: enabled
+        command: /usr/bin/pebble run -n
+        after:
+            - devmanager

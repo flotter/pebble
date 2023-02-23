@@ -1,0 +1,17 @@
+#!/bin/bash
+
+GN='\033[0;32m'
+NC='\033[0m'
+
+if [ -z "$IP" ]; then
+	echo "Error: please set the IP envrionment variable for the test device."
+	exit 1
+fi
+
+if [ -z "$MSG" ]; then
+	echo "Error: please set the IMG for failure."
+	exit 1
+fi
+
+COUNT=0
+while [ true ]; do ping -q -c1 $IP > /dev/null && (clear; echo "Attempt: $COUNT"; PEBBLE_SOCKET=$IP ./pebble services) || (clear; echo "Attempt: $COUNT"; echo "$MSG"); sleep 1; COUNT=$((COUNT+1)); done

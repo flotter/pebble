@@ -83,6 +83,10 @@ func (rcmd *cmdBootFirmware) Execute(args []string) error {
 		Dir:        pebbleDir,
 		SocketPath: socketPath,
 	}
+
+	// HACK
+	dopts.HTTPAddress = ":8888"
+
 	if rcmd.Verbose {
 		dopts.ServiceOutput = os.Stdout
 	}

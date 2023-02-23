@@ -1,0 +1,17 @@
+
+TARGET SETUP: Raspberry Pi 3B (ARM64)
+
+LINUX KERNEL (Full kernel):				20M
+
+PEBBLE (inc. Device Manager and Network Manager):       7.8M
+LINUX FIRMWARE (WIFI only):				0.7M
+LINUX MODULES (WIFI and USB Ethernet only):		3.6M
+							-----
+INITRAMFS:						12M
+							-----
+INITRAMFS COMPRESSED:					4.4M
+
+TOTAL KERNOS PAYLOAD SIZE (Kernel + Initramfs.gz)	24.5M
+
+SDCARD IMAGE (Payload + Raspberry Pi boot firmware)     32M
+
