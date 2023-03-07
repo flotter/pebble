@@ -196,6 +196,13 @@ func loadState(statePath string, restartHandler restart.Handler, backend state.B
 	return s, nil
 }
 
+// StartUp provides an early init facility for overlord managers which
+// completes before the overlord loop is started. This may only be called
+// once.
+func (o *Overlord) StartUp() error {
+	return o.stateEng.StartUp()
+}
+
 func initRestart(s *state.State, curBootID string, restartHandler restart.Handler) error {
 	s.Lock()
 	defer s.Unlock()
@@ -289,6 +296,10 @@ func (o *Overlord) Stop() error {
 // settle is test helper function only publically exposed for tests (see export_test.go
 // for a more detailed description).
 func (o *Overlord) settle(timeout time.Duration, beforeCleanups func()) error {
+	if err := o.StartUp(); err != nil {
+		return err
+	}
+
 	func() {
 		o.ensureLock.Lock()
 		defer o.ensureLock.Unlock()
