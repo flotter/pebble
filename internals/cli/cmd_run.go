@@ -31,8 +31,24 @@ import (
 	"github.com/canonical/pebble/internals/systemd"
 )
 
-var shortRunHelp = "Run the pebble environment"
-var longRunHelp = `
+type sharedRunEnterOpts struct {
+	CreateDirs bool       `long:"create-dirs"`
+	Hold       bool       `long:"hold"`
+	HTTP       string     `long:"http"`
+	Verbose    bool       `short:"v" long:"verbose"`
+	Args       [][]string `long:"args" terminator:";"`
+}
+
+var sharedRunEnterArgsHelp = map[string]string{
+	"--create-dirs": "Create pebble directory on startup if it doesn't exist",
+	"--hold":        "Do not start default services automatically",
+	"--http":        `Start HTTP API listening on this address (e.g., ":4000")`,
+	"--verbose":     "Log all output from services to stdout",
+	"--args":        `Provide additional arguments to a service`,
+}
+
+const cmdRunSummary = "Run the pebble environment"
+const cmdRunDescription = `
 The run command starts pebble and runs the configured environment.
 
 Additional arguments may be provided to the service command with the --args option, which
@@ -43,30 +59,19 @@ in the service plan. For example:
     $ pebble run --args myservice --port 8080 \; --hold
 `
 
-type sharedRunEnterOpts struct {
-	CreateDirs bool       `long:"create-dirs"`
-	Hold       bool       `long:"hold"`
-	HTTP       string     `long:"http"`
-	Verbose    bool       `short:"v" long:"verbose"`
-	Args       [][]string `long:"args" terminator:";"`
-}
-
-var sharedRunEnterOptsHelp = map[string]string{
-	"create-dirs": "Create pebble directory on startup if it doesn't exist",
-	"hold":        "Do not start default services automatically",
-	"http":        `Start HTTP API listening on this address (e.g., ":4000")`,
-	"verbose":     "Log all output from services to stdout",
-	"args":        `Provide additional arguments to a service`,
-}
-
 type cmdRun struct {
 	clientMixin
 	sharedRunEnterOpts
 }
 
 func init() {
-	addCommand("run", shortRunHelp, longRunHelp, func() flags.Commander { return &cmdRun{} },
-		sharedRunEnterOptsHelp, nil)
+	AddCommand(&CmdInfo{
+		Name:        "run",
+		Summary:     cmdRunSummary,
+		Description: cmdRunDescription,
+		ArgsHelp:    sharedRunEnterArgsHelp,
+		Builder:     func() flags.Commander { return &cmdRun{} },
+	})
 }
 
 func (rcmd *cmdRun) Execute(args []string) error {

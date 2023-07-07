@@ -16,14 +16,11 @@ package cli
 
 import (
 	"github.com/canonical/go-flags"
-
 	"github.com/canonical/pebble/client"
 )
 
-var shortRestartHelp = "Restart a service"
-var longRestartHelp = `
-The restart command restarts the named service(s) in the correct order.
-`
+const cmdRestartSummary = "Restart a service"
+const cmdRestartDescription = "The restart command restarts the named service(s) in the correct order."
 
 type cmdRestart struct {
 	waitMixin
@@ -33,7 +30,13 @@ type cmdRestart struct {
 }
 
 func init() {
-	addCommand("restart", shortRestartHelp, longRestartHelp, func() flags.Commander { return &cmdRestart{} }, waitDescs, nil)
+	AddCommand(&CmdInfo{
+		Name:        "restart",
+		Summary:     cmdRestartSummary,
+		Description: cmdRestartDescription,
+		ArgsHelp:    waitArgsHelp,
+		Builder:     func() flags.Commander { return &cmdRestart{} },
+	})
 }
 
 func (cmd cmdRestart) Execute(args []string) error {
