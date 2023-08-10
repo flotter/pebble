@@ -75,6 +75,10 @@ var API = []*Command{{
 	GET:    v1GetFiles,
 	POST:   v1PostFiles,
 }, {
+	Path:   "/v1/device",
+	UserOK: true,
+	POST:   v1PostDevice,
+}, {
 	Path:   "/v1/logs",
 	UserOK: true,
 	GET:    v1GetLogs,
