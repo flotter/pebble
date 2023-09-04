@@ -54,8 +54,8 @@ func v1PostFw(_ *Command, req *http.Request, _ *UserState) Response {
 // Writing files
 
 type fileInfo struct {
-	Path        string `json:"path"`
-	Size        uint64 `json:"size"`
+	Path string `json:"path"`
+	Size uint64 `json:"size"`
 }
 
 func firmwareRequest(body io.Reader, boundary string) Response {
@@ -71,9 +71,9 @@ func firmwareRequest(body io.Reader, boundary string) Response {
 
 	// Decode metadata about files to write.
 	var payload struct {
-		Action string           `json:"action"`
-		Slot string		`json:"slot"`
-		File fileInfo		`json:"file"`
+		Action string   `json:"action"`
+		Slot   string   `json:"slot"`
+		File   fileInfo `json:"file"`
 	}
 	decoder := json.NewDecoder(part)
 	if err := decoder.Decode(&payload); err != nil {
@@ -102,9 +102,9 @@ func firmwareRequest(body io.Reader, boundary string) Response {
 	part.Close()
 
 	return SyncResponse(&fileResult{
-             Path:  payload.File.Path,
-             Error: fwErrorToResult(err),
-        })
+		Path:  payload.File.Path,
+		Error: fwErrorToResult(err),
+	})
 }
 
 func fwErrorToResult(err error) *errorResult {
@@ -140,5 +140,5 @@ func writeSlotFile(slot string, item fileInfo, source io.Reader) error {
 
 // Because it's hard to test os.Chown without running the tests as root.
 var (
-	atomicWrite      = osutil.AtomicWrite
+	atomicWrite = osutil.AtomicWrite
 )

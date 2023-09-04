@@ -90,7 +90,7 @@ type Overlord struct {
 	checkMgr   *checkstate.CheckManager
 	logMgr     *logstate.LogManager
 	fwMgr      *fwstate.FirmwareManager
-	
+
 	extension Extension
 }
 

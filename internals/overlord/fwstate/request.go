@@ -18,7 +18,6 @@ import (
 	"github.com/canonical/pebble/internals/overlord/state"
 )
 
-
 // Update the non-running slot with the latest firmware
 // and configure the system to refresh to the new
 // firmware following a user reboot.
