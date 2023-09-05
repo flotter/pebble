@@ -15,17 +15,46 @@
 package fwstate
 
 import (
+	"io"
+	"sync"
+
 	"github.com/canonical/pebble/internals/overlord/state"
 )
 
-type FirmwareManager struct{}
+type FirmwareManager struct{
+	uploadLock sync.Mutex
+	uploadMap map[string]*UploadRequest
+}
 
 func NewFirmwareManager(s *state.State, runner *state.TaskRunner) *FirmwareManager {
-	fm := &FirmwareManager{}
+	fm := &FirmwareManager{
+		uploadMap: make(map[string]*UploadRequest),
+	}
 
 	runner.AddHandler("firmware-upload", fm.doUpload, nil)
 
 	return fm
+}
+
+type UploadRequest struct {
+	Size int64
+	Source io.Reader
+	Done chan error
+}
+
+func (fw *FirmwareManager) uploadRequest(changeId string) *UploadRequest {
+	fw.uploadLock.Lock()
+	defer fw.uploadLock.Unlock()
+	if req, ok := fw.uploadMap[changeId]; ok {
+		return req
+	}
+	return nil
+}
+
+func (fw *FirmwareManager) SetUploadRequest(changeId string, req *UploadRequest) {
+	fw.uploadLock.Lock()
+	defer fw.uploadLock.Unlock()
+	fw.uploadMap[changeId] = req
 }
 
 func (fm *FirmwareManager) Ensure() error {

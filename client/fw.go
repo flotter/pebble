@@ -47,16 +47,15 @@ type RefreshOptions struct {
 	Firmware *FwFile // Optional
 }
 
-type refreshPayload struct {
+type fwPayload struct {
 	// refresh        : store based refresh request
 	// refresh-local  : refresh includes an upload step
 	Action string `json:"action"`
 }
 
-type uploadPayload struct {
-	// upload         : upload a file to the device
-	Action string `json:"action"`
-	Size   int64  `json:"size"`
+type filePart struct {
+	Size int64  `json:"size"`
+	Id   string `json:"id"` // Change ID
 }
 
 // Refresh requests the device to perform a firmware refresh
@@ -70,7 +69,7 @@ func (client *Client) Refresh(opts *RefreshOptions) (changeID string, err error)
 		return "", err
 	}
 
-	payload := refreshPayload{
+	payload := fwPayload{
 		Action: "refresh-upload",
 	}
 	data, err := json.Marshal(&payload)
@@ -101,9 +100,9 @@ func (client *Client) Refresh(opts *RefreshOptions) (changeID string, err error)
 			return
 		}
 
-		payload := uploadPayload{
-			Action: "upload",
-			Size:   opts.Firmware.Size,
+		payload := filePart{
+			Size: opts.Firmware.Size,
+			Id:   changeID,
 		}
 		if err = json.NewEncoder(part).Encode(&payload); err != nil {
 			opts.Firmware.UploadError <- err

@@ -21,18 +21,15 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
-	pathpkg "path"
-	"path/filepath"
 
-	"github.com/canonical/pebble/internals/osutil"
-	"github.com/canonical/pebble/internals/osutil/sys"
+	"github.com/canonical/pebble/internals/overlord/fwstate"
 )
 
 func absolutePathError(path string) error {
 	return fmt.Errorf("paths must be relative to firmware slot, got %q", path)
 }
 
-func v1PostFw(_ *Command, req *http.Request, _ *UserState) Response {
+func v1PostFw(c *Command, req *http.Request, _ *UserState) Response {
 	contentType := req.Header.Get("Content-Type")
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
@@ -40,50 +37,68 @@ func v1PostFw(_ *Command, req *http.Request, _ *UserState) Response {
 	}
 
 	switch mediaType {
+	case "application/json":
+                var payload struct {
+		        // refresh        : store based refresh request
+			// refresh-local  : refresh includes an upload step
+			Action string `json:"action"`
+                }
+                decoder := json.NewDecoder(req.Body)
+                if err := decoder.Decode(&payload); err != nil {
+                        return statusBadRequest("cannot decode request body: %v", err)
+                }
+                switch payload.Action {
+		case "refresh-local":
+			return localRefreshRequest()
+		case "refresh":
+			return statusBadRequest("unsupported store refresh")
+		default:
+			return statusBadRequest("unsupported action %q", payload.Action)
+		}
 	case "multipart/form-data":
 		boundary := params["boundary"]
 		if len(boundary) < minBoundaryLength {
 			return statusBadRequest("invalid boundary %q", boundary)
 		}
-		return firmwareRequest(req.Body, boundary)
+		return uploadRequest(c, req.Body, boundary)
 	default:
 		return statusBadRequest("invalid media type %q", mediaType)
 	}
 }
 
-// Writing files
-
-type fileInfo struct {
-	Path string `json:"path"`
-	Size uint64 `json:"size"`
+// localRefreshRequest starts a taskset responsible for starting the
+// firmware refresh process. Once the tasks will wait for the firmware
+// file supplied through a second POST request.
+func localRefreshRequest() Response {
+	return statusBadRequest("TODO")
 }
 
-func firmwareRequest(body io.Reader, boundary string) Response {
-	// Read metadata part (field name "request").
+func uploadRequest(c *Command, body io.Reader, boundary string) Response {
+
 	mr := multipart.NewReader(body, boundary)
 	part, err := mr.NextPart()
 	if err != nil {
 		return statusBadRequest("cannot read request metadata: %v", err)
 	}
-	if part.FormName() != "request" {
-		return statusBadRequest(`metadata field name must be "request", got %q`, part.FormName())
+	if part.FormName() != "upload" {
+		return statusBadRequest(`metadata field name must be "upload", got %q`, part.FormName())
 	}
 
 	// Decode metadata about files to write.
 	var payload struct {
-		Action string   `json:"action"`
-		Slot   string   `json:"slot"`
-		File   fileInfo `json:"file"`
+	        Size int64  `json:"size"`
+		Id   string `json:"id"` // Change ID
 	}
+
 	decoder := json.NewDecoder(part)
 	if err := decoder.Decode(&payload); err != nil {
 		return statusBadRequest("cannot decode request metadata: %v", err)
 	}
-	if payload.Action != "refresh" {
-		return statusBadRequest(`multipart action must be "replace", got %q`, payload.Action)
+	if payload.Size <= 0 {
+		return statusBadRequest("invalid file size %q bytes", payload.Size)
 	}
-	if payload.File.Size == 0 {
-		return statusBadRequest("empty file not valid")
+	if payload.Id == "" {
+		return statusBadRequest("invalid file upload change id %q", payload.Id)
 	}
 
 	// Receive the file
@@ -94,51 +109,21 @@ func firmwareRequest(body io.Reader, boundary string) Response {
 	if part.FormName() != "file" {
 		return statusBadRequest(`field name must be "file", got %q`, part.FormName())
 	}
-	path := multipartFilename(part)
-	if path != payload.File.Path {
-		return statusBadRequest("no metadata for path %q", path)
-	}
-	err = writeSlotFile(payload.Slot, payload.File, part)
+
+	done := make(chan error)
+	defer close(done)
+
+	fwMgr := c.Daemon().Overlord().FirmwareManager()
+	fwMgr.SetUploadRequest(payload.Id, &fwstate.UploadRequest{
+		Size: payload.Size,
+		Source: part,
+		Done: done,
+	})
+
+	// Wait until the task indicates its done
+	err = <-done
+
 	part.Close()
 
-	return SyncResponse(&fileResult{
-		Path:  payload.File.Path,
-		Error: fwErrorToResult(err),
-	})
+	return SyncResponse(err)
 }
-
-func fwErrorToResult(err error) *errorResult {
-	if err == nil {
-		return nil
-	}
-	return &errorResult{
-		Kind:    errorKindGenericFileError,
-		Message: err.Error(),
-	}
-}
-
-func writeSlotFile(slot string, item fileInfo, source io.Reader) error {
-	if pathpkg.IsAbs(item.Path) {
-		return absolutePathError(item.Path)
-	}
-
-	// TODO: hack in path
-	path := filepath.Join("/tmp", slot, item.Path)
-
-	// Current user/group
-	sysUid, sysGid := sys.UserID(osutil.NoChown), sys.GroupID(osutil.NoChown)
-
-	// Create slot-relative directory if needed.
-	err := mkdirAllChown(pathpkg.Dir(path), 0o664, sysUid, sysGid)
-	if err != nil {
-		return fmt.Errorf("cannot create directory: %w", err)
-	}
-
-	// Atomically write file content to destination.
-	return atomicWriteChown(path, source, 0o664, osutil.AtomicWriteChmod, sysUid, sysGid)
-}
-
-// Because it's hard to test os.Chown without running the tests as root.
-var (
-	atomicWrite = osutil.AtomicWrite
-)

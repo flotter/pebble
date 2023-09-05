@@ -463,6 +463,10 @@ func (o *Overlord) CheckManager() *checkstate.CheckManager {
 	return o.checkMgr
 }
 
+func (o *Overlord) FirmwareManager() *fwstate.FirmwareManager {
+	return o.fwMgr
+}
+
 // Fake creates an Overlord without any managers and with a backend
 // not using disk. Managers can be added with AddManager. For testing.
 func Fake() *Overlord {
