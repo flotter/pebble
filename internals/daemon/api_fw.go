@@ -49,7 +49,7 @@ func v1PostFw(c *Command, req *http.Request, _ *UserState) Response {
                 }
                 switch payload.Action {
 		case "refresh-local":
-			return localRefreshRequest()
+			return localRefreshRequest(c)
 		case "refresh":
 			return statusBadRequest("unsupported store refresh")
 		default:
@@ -69,8 +69,39 @@ func v1PostFw(c *Command, req *http.Request, _ *UserState) Response {
 // localRefreshRequest starts a taskset responsible for starting the
 // firmware refresh process. Once the tasks will wait for the firmware
 // file supplied through a second POST request.
-func localRefreshRequest() Response {
-	return statusBadRequest("TODO")
+func localRefreshRequest(c *Command) Response {
+
+	fwMgr := c.Daemon().Overlord().FirmwareManager()
+	runningSlot := fwMgr.RunningSlot()
+
+	// Let's ask the Firmware Manager to give us the
+	// default install slot
+	installSlot, err := fwstate.GetInstallSlot(runningSlot)
+	if err != nil {
+		return statusBadRequest("unable to refresh: %v", err)
+	}
+
+	st := c.d.overlord.State()
+	st.Lock()
+	defer st.Unlock()
+
+	opts := &fwstate.RefreshOptions{
+                Upload: true,
+                Target: installSlot,
+        }
+
+	taskSet, err := fwstate.Refresh(st, opts)
+	if err != nil {
+		return statusBadRequest("unable to refresh: %v", err)
+	}
+
+	change := st.NewChange("refresh", "Firmware refresh")
+	change.AddAll(taskSet)
+	change.Set("firmware-refresh", opts)
+
+	stateEnsureBefore(st, 0)
+
+	return AsyncResponse(nil, change.ID())
 }
 
 func uploadRequest(c *Command, body io.Reader, boundary string) Response {

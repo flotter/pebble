@@ -50,7 +50,11 @@ func init() {
 		Name:        "refresh",
 		Summary:     cmdRefreshSummary,
 		Description: cmdRefreshDescription,
-		New:         func(opts *CmdOptions) flags.Commander { return &cmdRefresh{} },
+		New:         func(opts *CmdOptions) flags.Commander {
+			return &cmdRefresh{
+				client: opts.Client,
+			}
+		},
 	})
 }
 func (cmd *cmdRefresh) Execute(args []string) error {

@@ -70,7 +70,7 @@ func (client *Client) Refresh(opts *RefreshOptions) (changeID string, err error)
 	}
 
 	payload := fwPayload{
-		Action: "refresh-upload",
+		Action: "refresh-local",
 	}
 	data, err := json.Marshal(&payload)
 	if err != nil {

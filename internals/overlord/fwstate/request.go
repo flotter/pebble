@@ -15,17 +15,34 @@
 package fwstate
 
 import (
+	"fmt"
+
 	"github.com/canonical/pebble/internals/overlord/state"
 )
+
+type RefreshOptions struct {
+	Upload bool  `json:"upload"`// False for store based refresh
+	Target string `json:"target"`
+}
 
 // Update the non-running slot with the latest firmware
 // and configure the system to refresh to the new
 // firmware following a user reboot.
-func Refresh(s *state.State) (*state.TaskSet, error) {
+func Refresh(s *state.State, opts *RefreshOptions) (*state.TaskSet, error) {
 	var tasks []*state.Task
 
-	task := s.NewTask("firmware-upload", "Receiving firmware payload")
+	// We only support local upload right now
+	if opts.Upload == false {
+		return nil, fmt.Errorf("store refresh not implemented")
+	}
 
+	task := s.NewTask("firmware-refresh-prepare", "Validate and prepare for refresh")
+	tasks = append(tasks, task)
+
+	task = s.NewTask("firmware-refresh-upload", "Receiving firmware payload")
+	tasks = append(tasks, task)
+
+	task = s.NewTask("firmware-refresh-complete", "Verify and complete")
 	tasks = append(tasks, task)
 
 	return state.NewTaskSet(tasks...), nil

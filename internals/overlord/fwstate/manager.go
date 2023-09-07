@@ -17,21 +17,27 @@ package fwstate
 import (
 	"io"
 	"sync"
+	"fmt"
 
 	"github.com/canonical/pebble/internals/overlord/state"
 )
 
 type FirmwareManager struct{
+	state *state.State
+
 	uploadLock sync.Mutex
 	uploadMap map[string]*UploadRequest
 }
 
 func NewFirmwareManager(s *state.State, runner *state.TaskRunner) *FirmwareManager {
 	fm := &FirmwareManager{
+		state: s,
 		uploadMap: make(map[string]*UploadRequest),
 	}
 
-	runner.AddHandler("firmware-upload", fm.doUpload, nil)
+	runner.AddHandler("firmware-refresh-prepare", fm.doRefreshPrepare, fm.undoRefreshPrepare)
+	runner.AddHandler("firmware-refresh-upload", fm.doRefreshUpload, fm.undoRefreshUpload)
+	runner.AddHandler("firmware-refresh-complete", fm.doRefreshComplete, fm.undoRefreshComplete)
 
 	return fm
 }
@@ -42,19 +48,19 @@ type UploadRequest struct {
 	Done chan error
 }
 
-func (fw *FirmwareManager) uploadRequest(changeId string) *UploadRequest {
-	fw.uploadLock.Lock()
-	defer fw.uploadLock.Unlock()
-	if req, ok := fw.uploadMap[changeId]; ok {
+func (fm *FirmwareManager) uploadRequest(changeId string) *UploadRequest {
+	fm.uploadLock.Lock()
+	defer fm.uploadLock.Unlock()
+	if req, ok := fm.uploadMap[changeId]; ok {
 		return req
 	}
 	return nil
 }
 
-func (fw *FirmwareManager) SetUploadRequest(changeId string, req *UploadRequest) {
-	fw.uploadLock.Lock()
-	defer fw.uploadLock.Unlock()
-	fw.uploadMap[changeId] = req
+func (fm *FirmwareManager) SetUploadRequest(changeId string, req *UploadRequest) {
+	fm.uploadLock.Lock()
+	defer fm.uploadLock.Unlock()
+	fm.uploadMap[changeId] = req
 }
 
 func (fm *FirmwareManager) Ensure() error {
@@ -62,4 +68,22 @@ func (fm *FirmwareManager) Ensure() error {
 }
 
 func (fm *FirmwareManager) Stop() {
+}
+
+func (fm *FirmwareManager) RunningSlot() string {
+	// TODO: The bootloader should be consulted
+	return "a"
+}
+
+func GetInstallSlot(slot string) (target string, err error) {
+	switch slot {
+	case "a":
+		target = "b"
+	case "b":
+		target = "a"
+	default:
+		err = fmt.Errorf("unsupported slot %v", slot)
+	}
+
+	return target, err
 }
