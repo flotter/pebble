@@ -36,14 +36,16 @@ func Refresh(s *state.State, opts *RefreshOptions) (*state.TaskSet, error) {
 		return nil, fmt.Errorf("store refresh not implemented")
 	}
 
-	task := s.NewTask("firmware-refresh-prepare", "Validate and prepare for refresh")
-	tasks = append(tasks, task)
+	prep := s.NewTask("firmware-refresh-prepare", "Preparing refresh ...")
+	tasks = append(tasks, prep)
 
-	task = s.NewTask("firmware-refresh-upload", "Receiving firmware payload")
-	tasks = append(tasks, task)
+	upload := s.NewTask("firmware-refresh-upload", "Sending firmware to device ...")
+	upload.WaitFor(prep)
+	tasks = append(tasks, upload)
 
-	task = s.NewTask("firmware-refresh-complete", "Verify and complete")
-	tasks = append(tasks, task)
+	complete := s.NewTask("firmware-refresh-complete", "Completing refresh ...")
+	complete.WaitFor(upload)
+	tasks = append(tasks, complete)
 
 	return state.NewTaskSet(tasks...), nil
 }

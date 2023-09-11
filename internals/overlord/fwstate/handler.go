@@ -29,6 +29,7 @@ import (
 )
 
 func (fm *FirmwareManager) doRefreshPrepare(task *state.Task, tomb *tomb.Tomb) error {
+	time.Sleep(2 * time.Second)
 	return nil
 }
 
@@ -91,25 +92,30 @@ ready:
         defer aw.Cancel()
 
 	blockSize := int64(4096)
-	totalBlocks := int((req.Size + (blockSize - 1)) / blockSize)
-	doneBlocks := 0
+	totalSize := req.Size
+	doneSize := int64(0)
 
 	fm.state.Lock()
-	task.SetProgress("firmware upload", doneBlocks, totalBlocks)
+		// TODO: progress not supporting int64
+	task.SetProgress("firmware upload", int(doneSize), int(totalSize))
 	fm.state.Unlock()
 
 	for {
-		_, err := io.CopyN(aw, req.Source, blockSize)
+		n, err := io.CopyN(aw, req.Source, blockSize)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			return err
 		}
+		doneSize += n
 
 		fm.state.Lock()
-		task.SetProgress("firmware upload", doneBlocks, totalBlocks)
+		// TODO: progress not supporting int64
+		task.SetProgress("firmware upload", int(doneSize), int(totalSize))
 		fm.state.Unlock()
+
+		time.Sleep(time.Millisecond)
 	}
 
         return aw.Commit()
@@ -120,6 +126,7 @@ func (fm *FirmwareManager) undoRefreshUpload(task *state.Task, tomb *tomb.Tomb) 
 }
 
 func (fm *FirmwareManager) doRefreshComplete(task *state.Task, tomb *tomb.Tomb) error {
+	time.Sleep(2 * time.Second)
 	return nil
 }
 

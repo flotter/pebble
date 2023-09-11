@@ -99,17 +99,16 @@ func (cmd *cmdRefresh) Execute(args []string) error {
 			if sig == nil {
 				return
 			}
+			// Cancel refresh
+			_, err := cmd.client.Abort(changeId)
+			if err != nil {
+				fmt.Fprintf(Stderr, err.Error()+"\n")
+			}
 		// Upload was interrupted or channel closed
 		case err := <-asyncError:
 			if err == nil {
 				return
 			}
-		}
-
-		// Cancel refresh
-		_, err := cmd.client.Abort(changeId)
-		if err != nil {
-			fmt.Fprintf(Stderr, err.Error()+"\n")
 		}
 	}()
 
