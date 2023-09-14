@@ -30,6 +30,7 @@ import (
 	"github.com/canonical/pebble/internals/osutil"
 	"github.com/canonical/pebble/internals/overlord/checkstate"
 	"github.com/canonical/pebble/internals/overlord/cmdstate"
+	"github.com/canonical/pebble/internals/overlord/fwstate"
 	"github.com/canonical/pebble/internals/overlord/logstate"
 	"github.com/canonical/pebble/internals/overlord/patch"
 	"github.com/canonical/pebble/internals/overlord/restart"
@@ -88,6 +89,7 @@ type Overlord struct {
 	commandMgr *cmdstate.CommandManager
 	checkMgr   *checkstate.CheckManager
 	logMgr     *logstate.LogManager
+	fwMgr      *fwstate.FirmwareManager
 
 	extension Extension
 }
@@ -159,6 +161,10 @@ func New(opts *Options) (*Overlord, error) {
 
 	// Tell service manager about check failures.
 	o.checkMgr.NotifyCheckFailed(o.serviceMgr.CheckFailed)
+
+	// Firmware State management
+	o.fwMgr = fwstate.NewFirmwareManager(s, o.runner)
+	o.stateEng.AddManager(o.fwMgr)
 
 	if o.extension != nil {
 		extraManagers, err := o.extension.ExtraManagers(o)
@@ -455,6 +461,10 @@ func (o *Overlord) CommandManager() *cmdstate.CommandManager {
 // checks under the overlord.
 func (o *Overlord) CheckManager() *checkstate.CheckManager {
 	return o.checkMgr
+}
+
+func (o *Overlord) FirmwareManager() *fwstate.FirmwareManager {
+	return o.fwMgr
 }
 
 // Fake creates an Overlord without any managers and with a backend
