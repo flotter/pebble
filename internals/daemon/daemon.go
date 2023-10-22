@@ -166,6 +166,9 @@ func (c *Command) canAccess(r *http.Request, user *UserState) accessResult {
 		return accessOK
 	}
 
+	// HACK: Open up the server for remote TCP comms
+	return accessOK
+
 	// isUser means we have a UID for the request
 	isUser := false
 	pid, uid, socket, err := ucrednetGet(r.RemoteAddr)

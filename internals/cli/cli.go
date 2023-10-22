@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -271,6 +272,12 @@ func Run() error {
 	logger.SetLogger(logger.New(os.Stderr, "[pebble] "))
 
 	_, clientConfig.Socket = getEnvPaths()
+
+	// HACK: If this is a IPv4 we need to change the baseURL
+	ip := net.ParseIP(clientConfig.Socket)
+	if ip != nil && ip.To4() != nil {
+		clientConfig.BaseURL = "http://" + clientConfig.Socket
+	}
 
 	cli, err := client.New(&clientConfig)
 	if err != nil {

@@ -563,6 +563,15 @@ type defaultRequester struct {
 	client    *Client
 }
 
+
+// HACK: Support a TCP dailer
+func tcpDialer(url string) func(string, string) (net.Conn, error) {
+       return func(_, _ string) (net.Conn, error) {
+
+               return net.Dial("tcp", url)
+       }
+}
+
 func newDefaultRequester(client *Client, opts *Config) (*defaultRequester, error) {
 	if opts == nil {
 		opts = &Config{}
@@ -581,7 +590,8 @@ func newDefaultRequester(client *Client, opts *Config) (*defaultRequester, error
 		if err != nil {
 			return nil, fmt.Errorf("cannot parse base URL: %w", err)
 		}
-		transport := &http.Transport{DisableKeepAlives: opts.DisableKeepAlive}
+		// HACK: Plumb in the dailing
+		transport := &http.Transport{Dial: tcpDialer(opts.Socket + ":8888"), DisableKeepAlives: opts.DisableKeepAlive}
 		requester = &defaultRequester{baseURL: *baseURL, transport: transport}
 	}
 
