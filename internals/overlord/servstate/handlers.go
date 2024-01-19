@@ -114,12 +114,7 @@ func (m *ServiceManager) doStart(task *state.Task, tomb *tomb.Tomb) error {
 		return err
 	}
 
-	releasePlan, err := m.acquirePlan()
-	if err != nil {
-		return fmt.Errorf("cannot acquire plan lock: %w", err)
-	}
 	config, ok := m.plan.Services[request.Name]
-	releasePlan()
 	if !ok {
 		return fmt.Errorf("cannot find service %q in plan", request.Name)
 	}
