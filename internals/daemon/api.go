@@ -112,6 +112,7 @@ var (
 	stateEnsureBefore    = (*state.State).EnsureBefore
 
 	overlordServiceManager = (*overlord.Overlord).ServiceManager
+	overlordPlanManager = (*overlord.Overlord).PlanManager
 
 	muxVars = mux.Vars
 )
