@@ -33,511 +33,210 @@ import (
 	"github.com/canonical/pebble/internals/osutil"
 )
 
-const (
-	defaultBackoffDelay  = 500 * time.Millisecond
-	defaultBackoffFactor = 2.0
-	defaultBackoffLimit  = 30 * time.Second
+// PartName uniquely describes a top-level part key, as used in the plan schema.
+type PartName string
 
-	defaultCheckPeriod    = 10 * time.Second
-	defaultCheckTimeout   = 3 * time.Second
-	defaultCheckThreshold = 3
-)
+// PartType describes a specific part type.
+type PartType interface {
+	// The top level YAML key for this part.
+	Key() PartName
 
-type Plan struct {
-	Layers     []*Layer              `yaml:"-"`
-	Services   map[string]*Service   `yaml:"services,omitempty"`
-	Checks     map[string]*Check     `yaml:"checks,omitempty"`
-	LogTargets map[string]*LogTarget `yaml:"log-targets,omitempty"`
+	// The parts on which this part type is dependant. They have to be
+	// available by the time this type is registered.
+	Wants() (parts []PartName)
+
+	// New create a new part instance.
+	New(layer *Layer) Part
+}
+
+// Part defines an externally defined data structure that is compatible as
+// part of the global plan.
+type Part interface {
+	// UnmarshalYAML loads a part from a YAML layer.
+	UnmarshalYAML(value *yaml.Node) error
+
+	// Copy creates a new deep copy of a part.
+	Copy() Part
+
+	// Merge can merge another part into itself, taking the override
+	// preference into account, which would either override or merge
+	// a part entry.
+	Merge(other Part)
 }
 
 type Layer struct {
-	Order       int                   `yaml:"-"`
-	Label       string                `yaml:"-"`
-	Summary     string                `yaml:"summary,omitempty"`
-	Description string                `yaml:"description,omitempty"`
-	Services    map[string]*Service   `yaml:"services,omitempty"`
-	Checks      map[string]*Check     `yaml:"checks,omitempty"`
-	LogTargets  map[string]*LogTarget `yaml:"log-targets,omitempty"`
+	Order         int               `yaml:"-"`
+	Label         string            `yaml:"-"`
+	Summary       string            `yaml:"summary,omitempty"`
+	Description   string            `yaml:"description,omitempty"`
+
+	Parts         map[PartName]Part `yaml:,inline`
+	PartsOrder    []PartName        `yaml:"-"`
 }
 
-type Service struct {
-	// Basic details
-	Name        string         `yaml:"-"`
-	Summary     string         `yaml:"summary,omitempty"`
-	Description string         `yaml:"description,omitempty"`
-	Startup     ServiceStartup `yaml:"startup,omitempty"`
-	Override    Override       `yaml:"override,omitempty"`
-	Command     string         `yaml:"command,omitempty"`
-
-	// Service dependencies
-	After    []string `yaml:"after,omitempty"`
-	Before   []string `yaml:"before,omitempty"`
-	Requires []string `yaml:"requires,omitempty"`
-
-	// Options for command execution
-	Environment map[string]string `yaml:"environment,omitempty"`
-	UserID      *int              `yaml:"user-id,omitempty"`
-	User        string            `yaml:"user,omitempty"`
-	GroupID     *int              `yaml:"group-id,omitempty"`
-	Group       string            `yaml:"group,omitempty"`
-	WorkingDir  string            `yaml:"working-dir,omitempty"`
-
-	// Auto-restart and backoff functionality
-	OnSuccess      ServiceAction            `yaml:"on-success,omitempty"`
-	OnFailure      ServiceAction            `yaml:"on-failure,omitempty"`
-	OnCheckFailure map[string]ServiceAction `yaml:"on-check-failure,omitempty"`
-	BackoffDelay   OptionalDuration         `yaml:"backoff-delay,omitempty"`
-	BackoffFactor  OptionalFloat            `yaml:"backoff-factor,omitempty"`
-	BackoffLimit   OptionalDuration         `yaml:"backoff-limit,omitempty"`
-	KillDelay      OptionalDuration         `yaml:"kill-delay,omitempty"`
+type Plan struct {
+	baseDir           string
+	orderedPartTypes  []PartType
+	
+	Layers            []*Layer
+	Combined          *Layer
 }
 
-// Copy returns a deep copy of the service.
-func (s *Service) Copy() *Service {
-	copied := *s
-	copied.After = append([]string(nil), s.After...)
-	copied.Before = append([]string(nil), s.Before...)
-	copied.Requires = append([]string(nil), s.Requires...)
-	if s.Environment != nil {
-		copied.Environment = make(map[string]string)
-		for k, v := range s.Environment {
-			copied.Environment[k] = v
-		}
-	}
-	if s.UserID != nil {
-		copied.UserID = copyIntPtr(s.UserID)
-	}
-	if s.GroupID != nil {
-		copied.GroupID = copyIntPtr(s.GroupID)
-	}
-	if s.OnCheckFailure != nil {
-		copied.OnCheckFailure = make(map[string]ServiceAction)
-		for k, v := range s.OnCheckFailure {
-			copied.OnCheckFailure[k] = v
-		}
-	}
-	return &copied
-}
-
-// Merge merges the fields set in other into s.
-func (s *Service) Merge(other *Service) {
-	if other.Summary != "" {
-		s.Summary = other.Summary
-	}
-	if other.Description != "" {
-		s.Description = other.Description
-	}
-	if other.Startup != StartupUnknown {
-		s.Startup = other.Startup
-	}
-	if other.Command != "" {
-		s.Command = other.Command
-	}
-	if other.KillDelay.IsSet {
-		s.KillDelay = other.KillDelay
-	}
-	if other.UserID != nil {
-		s.UserID = copyIntPtr(other.UserID)
-	}
-	if other.User != "" {
-		s.User = other.User
-	}
-	if other.GroupID != nil {
-		s.GroupID = copyIntPtr(other.GroupID)
-	}
-	if other.Group != "" {
-		s.Group = other.Group
-	}
-	if other.WorkingDir != "" {
-		s.WorkingDir = other.WorkingDir
-	}
-	s.After = append(s.After, other.After...)
-	s.Before = append(s.Before, other.Before...)
-	s.Requires = append(s.Requires, other.Requires...)
-	for k, v := range other.Environment {
-		if s.Environment == nil {
-			s.Environment = make(map[string]string)
-		}
-		s.Environment[k] = v
-	}
-	if other.OnSuccess != "" {
-		s.OnSuccess = other.OnSuccess
-	}
-	if other.OnFailure != "" {
-		s.OnFailure = other.OnFailure
-	}
-	for k, v := range other.OnCheckFailure {
-		if s.OnCheckFailure == nil {
-			s.OnCheckFailure = make(map[string]ServiceAction)
-		}
-		s.OnCheckFailure[k] = v
-	}
-	if other.BackoffDelay.IsSet {
-		s.BackoffDelay = other.BackoffDelay
-	}
-	if other.BackoffFactor.IsSet {
-		s.BackoffFactor = other.BackoffFactor
-	}
-	if other.BackoffLimit.IsSet {
-		s.BackoffLimit = other.BackoffLimit
+func NewPlan(baseDir string) *Plan {
+	return &Plan{
+		baseDir: baseDir,
 	}
 }
 
-// Equal returns true when the two services are equal in value.
-func (s *Service) Equal(other *Service) bool {
-	if s == other {
-		return true
+// AddPartType adds a new part schema to the global plan. It returns an
+// error if the part dependencies (other parts) are not already added.
+//
+// The design here assumes a static global plan part add order. In other
+// words, a part x in Pebble that depends on part y for validation, must
+// be added after the dependency was added.
+func (p *Plan) AddPartType(partType PartType) error {
+	p.orderedPartTypes = append(p.orderedPartTypes, partType)
+
+	prevNames := []PartName{}
+	for _, partType := range p.orderedPartTypes {
+		for _, want := range partType.Wants() {
+			for _, prev := range prevNames {
+				if want == prev {
+					break
+				}
+			}
+			return fmt.Errorf("cannot find plan part dependency %s", want)
+		}
+		prevTypes = append(prevTypes, partType.Key())
 	}
-	return reflect.DeepEqual(s, other)
+	return nil
 }
 
-// ParseCommand returns a service command as two stream of strings.
-// The base command is returned as a stream and the default arguments
-// in [ ... ] group is returned as another stream.
-func (s *Service) ParseCommand() (base, extra []string, err error) {
-	defer func() {
-		if err != nil {
-			err = fmt.Errorf("cannot parse service %q command: %w", s.Name, err)
-		}
-	}()
-
-	args, err := shlex.Split(s.Command)
+// Load reads the configuration layers from the "layers" sub-directory in
+// baseDir, and updates the plan, dropping any previous ephermeral layers. If
+// the "layers" sub-directory doesn't exist, it returns a valid Plan with
+// no layers.
+func (p *Plan) Load() error {
+	layersDir := filepath.Join(dir, "layers")
+	_, err := os.Stat(layersDir)
 	if err != nil {
-		return nil, nil, err
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 
-	var inBrackets, gotBrackets bool
+	plan.Layers, err := ReadLayersDir(layersDir)
+	if err != nil {
+		return err
+	}
+	plan.Combined, err := CombineLayers(layers...)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
-	for idx, arg := range args {
-		if inBrackets {
-			if arg == "[" {
-				return nil, nil, fmt.Errorf("cannot nest [ ... ] groups")
+func (p *Plan) NewLayer() *Layer {
+	layer := &Layer{
+		Parts: make(map[string]LayerPart),
+	}
+	for k, v := range p.layerParts {
+		layer.Parts[k] = v(layer)
+	}
+	return layer
+}
+
+func (l *Layer) ParseLayer(order int, label string, data []byte) error {
+	dec := yaml.NewDecoder(bytes.NewBuffer(data))
+	dec.KnownFields(true)
+	err := dec.Decode(l)
+	if err != nil {
+		return nil, &FormatError{
+			Message: fmt.Sprintf("cannot parse layer %q: %v", label, err),
+		}
+	}
+	layer.Order = order
+	layer.Label = label
+
+	for name, part := range l.Parts {
+		err := part.Validate()
+		if err != nil {
+			return fmt.Errorf("cannot validate %s part: %w", name, err)
+		}
+	}
+
+	for name, service := range layer.Services {
+		if name == "" {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("cannot use empty string as service name"),
 			}
-			if arg == "]" {
-				inBrackets = false
-				continue
+		}
+		if name == "pebble" {
+			// Disallow service name "pebble" to avoid ambiguity (for example,
+			// in log output).
+			return nil, &FormatError{
+				Message: fmt.Sprintf("cannot use reserved service name %q", name),
 			}
-			extra = append(extra, arg)
-			continue
 		}
-		if gotBrackets {
-			return nil, nil, fmt.Errorf("cannot have any arguments after [ ... ] group")
+		// Deprecated service names
+		if name == "all" || name == "default" || name == "none" {
+			logger.Noticef("Using keyword %q as a service name is deprecated", name)
 		}
-		if arg == "[" {
-			if idx == 0 {
-				return nil, nil, fmt.Errorf("cannot start command with [ ... ] group")
+		if strings.HasPrefix(name, "-") {
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`cannot use service name %q: starting with "-" not allowed`, name),
 			}
-			inBrackets = true
-			gotBrackets = true
-			continue
 		}
-		if arg == "]" {
-			return nil, nil, fmt.Errorf("cannot have ] outside of [ ... ] group")
+		if service == nil {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("service object cannot be null for service %q", name),
+			}
 		}
-		base = append(base, arg)
+		service.Name = name
 	}
 
-	return base, extra, nil
-}
-
-// CommandString returns a service command as a string after
-// appending the arguments in "extra" to the command in "base"
-func CommandString(base, extra []string) string {
-	output := shlex.Join(base)
-	if len(extra) > 0 {
-		output = output + " [ " + shlex.Join(extra) + " ]"
-	}
-	return output
-}
-
-// LogsTo returns true if the logs from s should be forwarded to target t.
-func (s *Service) LogsTo(t *LogTarget) bool {
-	// Iterate backwards through t.Services until we find something matching
-	// s.Name.
-	for i := len(t.Services) - 1; i >= 0; i-- {
-		switch t.Services[i] {
-		case s.Name:
-			return true
-		case ("-" + s.Name):
-			return false
-		case "all":
-			return true
-		case "-all":
-			return false
+	for name, check := range layer.Checks {
+		if name == "" {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("cannot use empty string as check name"),
+			}
 		}
-	}
-	// Nothing matching the service name, so it was not specified.
-	return false
-}
-
-type ServiceStartup string
-
-const (
-	StartupUnknown  ServiceStartup = ""
-	StartupEnabled  ServiceStartup = "enabled"
-	StartupDisabled ServiceStartup = "disabled"
-)
-
-// Override specifies the layer override mechanism for an object.
-type Override string
-
-const (
-	UnknownOverride Override = ""
-	MergeOverride   Override = "merge"
-	ReplaceOverride Override = "replace"
-)
-
-type ServiceAction string
-
-const (
-	// Actions allowed in all contexts
-	ActionUnset    ServiceAction = ""
-	ActionRestart  ServiceAction = "restart"
-	ActionShutdown ServiceAction = "shutdown"
-	ActionIgnore   ServiceAction = "ignore"
-
-	// Actions only allowed in specific contexts
-	ActionFailureShutdown ServiceAction = "failure-shutdown"
-	ActionSuccessShutdown ServiceAction = "success-shutdown"
-)
-
-// Check specifies configuration for a single health check.
-type Check struct {
-	// Basic details
-	Name     string     `yaml:"-"`
-	Override Override   `yaml:"override,omitempty"`
-	Level    CheckLevel `yaml:"level,omitempty"`
-
-	// Common check settings
-	Period    OptionalDuration `yaml:"period,omitempty"`
-	Timeout   OptionalDuration `yaml:"timeout,omitempty"`
-	Threshold int              `yaml:"threshold,omitempty"`
-
-	// Type-specific check settings (only one of these can be set)
-	HTTP *HTTPCheck `yaml:"http,omitempty"`
-	TCP  *TCPCheck  `yaml:"tcp,omitempty"`
-	Exec *ExecCheck `yaml:"exec,omitempty"`
-}
-
-// Copy returns a deep copy of the check configuration.
-func (c *Check) Copy() *Check {
-	copied := *c
-	if c.HTTP != nil {
-		copied.HTTP = c.HTTP.Copy()
-	}
-	if c.TCP != nil {
-		copied.TCP = c.TCP.Copy()
-	}
-	if c.Exec != nil {
-		copied.Exec = c.Exec.Copy()
-	}
-	return &copied
-}
-
-// Merge merges the fields set in other into c.
-func (c *Check) Merge(other *Check) {
-	if other.Level != "" {
-		c.Level = other.Level
-	}
-	if other.Period.IsSet {
-		c.Period = other.Period
-	}
-	if other.Timeout.IsSet {
-		c.Timeout = other.Timeout
-	}
-	if other.Threshold != 0 {
-		c.Threshold = other.Threshold
-	}
-	if other.HTTP != nil {
-		if c.HTTP == nil {
-			c.HTTP = &HTTPCheck{}
+		if check == nil {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("check object cannot be null for check %q", name),
+			}
 		}
-		c.HTTP.Merge(other.HTTP)
+		check.Name = name
 	}
-	if other.TCP != nil {
-		if c.TCP == nil {
-			c.TCP = &TCPCheck{}
+
+	for name, target := range layer.LogTargets {
+		if name == "" {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("cannot use empty string as log target name"),
+			}
 		}
-		c.TCP.Merge(other.TCP)
-	}
-	if other.Exec != nil {
-		if c.Exec == nil {
-			c.Exec = &ExecCheck{}
+		if target == nil {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("log target object cannot be null for log target %q", name),
+			}
 		}
-		c.Exec.Merge(other.Exec)
-	}
-}
-
-// CheckLevel specifies the optional check level.
-type CheckLevel string
-
-const (
-	UnsetLevel CheckLevel = ""
-	AliveLevel CheckLevel = "alive"
-	ReadyLevel CheckLevel = "ready"
-)
-
-// HTTPCheck holds the configuration for an HTTP health check.
-type HTTPCheck struct {
-	URL     string            `yaml:"url,omitempty"`
-	Headers map[string]string `yaml:"headers,omitempty"`
-}
-
-// Copy returns a deep copy of the HTTP check configuration.
-func (c *HTTPCheck) Copy() *HTTPCheck {
-	copied := *c
-	if c.Headers != nil {
-		copied.Headers = make(map[string]string, len(c.Headers))
-		for k, v := range c.Headers {
-			copied.Headers[k] = v
+		for labelName := range target.Labels {
+			// 'pebble_*' labels are reserved
+			if strings.HasPrefix(labelName, "pebble_") {
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`log target %q: label %q uses reserved prefix "pebble_"`, name, labelName),
+				}
+			}
 		}
+		target.Name = name
 	}
-	return &copied
-}
 
-// Merge merges the fields set in other into c.
-func (c *HTTPCheck) Merge(other *HTTPCheck) {
-	if other.URL != "" {
-		c.URL = other.URL
+	err = layer.checkCycles()
+	if err != nil {
+		return nil, err
 	}
-	for k, v := range other.Headers {
-		if c.Headers == nil {
-			c.Headers = make(map[string]string)
-		}
-		c.Headers[k] = v
-	}
-}
-
-// TCPCheck holds the configuration for an HTTP health check.
-type TCPCheck struct {
-	Port int    `yaml:"port,omitempty"`
-	Host string `yaml:"host,omitempty"`
-}
-
-// Copy returns a deep copy of the TCP check configuration.
-func (c *TCPCheck) Copy() *TCPCheck {
-	copied := *c
-	return &copied
-}
-
-// Merge merges the fields set in other into c.
-func (c *TCPCheck) Merge(other *TCPCheck) {
-	if other.Port != 0 {
-		c.Port = other.Port
-	}
-	if other.Host != "" {
-		c.Host = other.Host
-	}
-}
-
-// ExecCheck holds the configuration for an exec health check.
-type ExecCheck struct {
-	Command        string            `yaml:"command,omitempty"`
-	ServiceContext string            `yaml:"service-context,omitempty"`
-	Environment    map[string]string `yaml:"environment,omitempty"`
-	UserID         *int              `yaml:"user-id,omitempty"`
-	User           string            `yaml:"user,omitempty"`
-	GroupID        *int              `yaml:"group-id,omitempty"`
-	Group          string            `yaml:"group,omitempty"`
-	WorkingDir     string            `yaml:"working-dir,omitempty"`
-}
-
-// Copy returns a deep copy of the exec check configuration.
-func (c *ExecCheck) Copy() *ExecCheck {
-	copied := *c
-	if c.Environment != nil {
-		copied.Environment = make(map[string]string, len(c.Environment))
-		for k, v := range c.Environment {
-			copied.Environment[k] = v
-		}
-	}
-	if c.UserID != nil {
-		copied.UserID = copyIntPtr(c.UserID)
-	}
-	if c.GroupID != nil {
-		copied.GroupID = copyIntPtr(c.GroupID)
-	}
-	return &copied
-}
-
-// Merge merges the fields set in other into c.
-func (c *ExecCheck) Merge(other *ExecCheck) {
-	if other.Command != "" {
-		c.Command = other.Command
-	}
-	if other.ServiceContext != "" {
-		c.ServiceContext = other.ServiceContext
-	}
-	for k, v := range other.Environment {
-		if c.Environment == nil {
-			c.Environment = make(map[string]string)
-		}
-		c.Environment[k] = v
-	}
-	if other.UserID != nil {
-		c.UserID = copyIntPtr(other.UserID)
-	}
-	if other.User != "" {
-		c.User = other.User
-	}
-	if other.GroupID != nil {
-		c.GroupID = copyIntPtr(other.GroupID)
-	}
-	if other.Group != "" {
-		c.Group = other.Group
-	}
-	if other.WorkingDir != "" {
-		c.WorkingDir = other.WorkingDir
-	}
-}
-
-// LogTarget specifies a remote server to forward logs to.
-type LogTarget struct {
-	Name     string            `yaml:"-"`
-	Type     LogTargetType     `yaml:"type"`
-	Location string            `yaml:"location"`
-	Services []string          `yaml:"services"`
-	Override Override          `yaml:"override,omitempty"`
-	Labels   map[string]string `yaml:"labels,omitempty"`
-}
-
-// LogTargetType defines the protocol to use to forward logs.
-type LogTargetType string
-
-const (
-	LokiTarget     LogTargetType = "loki"
-	SyslogTarget   LogTargetType = "syslog"
-	UnsetLogTarget LogTargetType = ""
-)
-
-// Copy returns a deep copy of the log target configuration.
-func (t *LogTarget) Copy() *LogTarget {
-	copied := *t
-	copied.Services = append([]string(nil), t.Services...)
-	if t.Labels != nil {
-		copied.Labels = make(map[string]string)
-		for k, v := range t.Labels {
-			copied.Labels[k] = v
-		}
-	}
-	return &copied
-}
-
-// Merge merges the fields set in other into t.
-func (t *LogTarget) Merge(other *LogTarget) {
-	if other.Type != "" {
-		t.Type = other.Type
-	}
-	if other.Location != "" {
-		t.Location = other.Location
-	}
-	t.Services = append(t.Services, other.Services...)
-	for k, v := range other.Labels {
-		if t.Labels == nil {
-			t.Labels = make(map[string]string)
-		}
-		t.Labels[k] = v
-	}
+	return &layer, err
 }
 
 // FormatError is the error returned when a layer has a format error, such as
@@ -816,96 +515,6 @@ func CombineLayers(layers ...*Layer) (*Layer, error) {
 	return combined, nil
 }
 
-// StartOrder returns the required services that must be started for the named
-// services to be properly started, in the order that they must be started.
-// An error is returned when a provided service name does not exist, or there
-// is an order cycle involving the provided service or its dependencies.
-func (p *Plan) StartOrder(names []string) ([]string, error) {
-	return order(p.Services, names, false)
-}
-
-// StopOrder returns the required services that must be stopped for the named
-// services to be properly stopped, in the order that they must be stopped.
-// An error is returned when a provided service name does not exist, or there
-// is an order cycle involving the provided service or its dependencies.
-func (p *Plan) StopOrder(names []string) ([]string, error) {
-	return order(p.Services, names, true)
-}
-
-func order(services map[string]*Service, names []string, stop bool) ([]string, error) {
-	// For stop, create a list of reversed dependencies.
-	predecessors := map[string][]string(nil)
-	if stop {
-		predecessors = make(map[string][]string)
-		for name, service := range services {
-			for _, req := range service.Requires {
-				predecessors[req] = append(predecessors[req], name)
-			}
-		}
-	}
-
-	// Collect all services that will be started or stopped.
-	successors := map[string][]string{}
-	pending := append([]string(nil), names...)
-	for i := 0; i < len(pending); i++ {
-		name := pending[i]
-		if _, seen := successors[name]; seen {
-			continue
-		}
-		successors[name] = nil
-		if stop {
-			pending = append(pending, predecessors[name]...)
-		} else {
-			service, ok := services[name]
-			if !ok {
-				return nil, &FormatError{
-					Message: fmt.Sprintf("service %q does not exist", name),
-				}
-			}
-			pending = append(pending, service.Requires...)
-		}
-	}
-
-	// Create a list of successors involving those services only.
-	for name := range successors {
-		service, ok := services[name]
-		if !ok {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("service %q does not exist", name),
-			}
-		}
-		succs := successors[name]
-		serviceAfter := service.After
-		serviceBefore := service.Before
-		if stop {
-			serviceAfter, serviceBefore = serviceBefore, serviceAfter
-		}
-		for _, after := range serviceAfter {
-			if _, required := successors[after]; required {
-				succs = append(succs, after)
-			}
-		}
-		successors[name] = succs
-		for _, before := range serviceBefore {
-			if succs, required := successors[before]; required {
-				successors[before] = append(succs, name)
-			}
-		}
-	}
-
-	// Sort them up.
-	var order []string
-	for _, names := range tarjanSort(successors) {
-		if len(names) > 1 {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("services in before/after loop: %s", strings.Join(names, ", ")),
-			}
-		}
-		order = append(order, names[0])
-	}
-	return order, nil
-}
-
 func (l *Layer) checkCycles() error {
 	var names []string
 	for name := range l.Services {
@@ -915,109 +524,6 @@ func (l *Layer) checkCycles() error {
 	return err
 }
 
-func ParseLayer(order int, label string, data []byte) (*Layer, error) {
-	layer := Layer{
-		Services:   map[string]*Service{},
-		Checks:     map[string]*Check{},
-		LogTargets: map[string]*LogTarget{},
-	}
-	dec := yaml.NewDecoder(bytes.NewBuffer(data))
-	dec.KnownFields(true)
-	err := dec.Decode(&layer)
-	if err != nil {
-		return nil, &FormatError{
-			Message: fmt.Sprintf("cannot parse layer %q: %v", label, err),
-		}
-	}
-	layer.Order = order
-	layer.Label = label
-
-	for name, service := range layer.Services {
-		if name == "" {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("cannot use empty string as service name"),
-			}
-		}
-		if name == "pebble" {
-			// Disallow service name "pebble" to avoid ambiguity (for example,
-			// in log output).
-			return nil, &FormatError{
-				Message: fmt.Sprintf("cannot use reserved service name %q", name),
-			}
-		}
-		// Deprecated service names
-		if name == "all" || name == "default" || name == "none" {
-			logger.Noticef("Using keyword %q as a service name is deprecated", name)
-		}
-		if strings.HasPrefix(name, "-") {
-			return nil, &FormatError{
-				Message: fmt.Sprintf(`cannot use service name %q: starting with "-" not allowed`, name),
-			}
-		}
-		if service == nil {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("service object cannot be null for service %q", name),
-			}
-		}
-		service.Name = name
-	}
-
-	for name, check := range layer.Checks {
-		if name == "" {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("cannot use empty string as check name"),
-			}
-		}
-		if check == nil {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("check object cannot be null for check %q", name),
-			}
-		}
-		check.Name = name
-	}
-
-	for name, target := range layer.LogTargets {
-		if name == "" {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("cannot use empty string as log target name"),
-			}
-		}
-		if target == nil {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("log target object cannot be null for log target %q", name),
-			}
-		}
-		for labelName := range target.Labels {
-			// 'pebble_*' labels are reserved
-			if strings.HasPrefix(labelName, "pebble_") {
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`log target %q: label %q uses reserved prefix "pebble_"`, name, labelName),
-				}
-			}
-		}
-		target.Name = name
-	}
-
-	err = layer.checkCycles()
-	if err != nil {
-		return nil, err
-	}
-	return &layer, err
-}
-
-func validServiceAction(action ServiceAction, additionalValid ...ServiceAction) bool {
-	for _, v := range additionalValid {
-		if action == v {
-			return true
-		}
-	}
-	switch action {
-	case ActionUnset, ActionRestart, ActionShutdown, ActionIgnore:
-		return true
-	default:
-		return false
-	}
-}
 
 var fnameExp = regexp.MustCompile("^([0-9]{3})-([a-z](?:-?[a-z0-9]){2,}).yaml$")
 
@@ -1078,110 +584,4 @@ func ReadLayersDir(dirname string) ([]*Layer, error) {
 		layers = append(layers, layer)
 	}
 	return layers, nil
-}
-
-// ReadDir reads the configuration layers from the "layers" sub-directory in
-// dir, and returns the resulting Plan. If the "layers" sub-directory doesn't
-// exist, it returns a valid Plan with no layers.
-func ReadDir(dir string) (*Plan, error) {
-	layersDir := filepath.Join(dir, "layers")
-	_, err := os.Stat(layersDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &Plan{}, nil
-		}
-		return nil, err
-	}
-
-	layers, err := ReadLayersDir(layersDir)
-	if err != nil {
-		return nil, err
-	}
-	combined, err := CombineLayers(layers...)
-	if err != nil {
-		return nil, err
-	}
-	plan := &Plan{
-		Layers:     layers,
-		Services:   combined.Services,
-		Checks:     combined.Checks,
-		LogTargets: combined.LogTargets,
-	}
-	return plan, err
-}
-
-// MergeServiceContext merges the overrides on top of the service context
-// specified by serviceName, returning a new ContextOptions value. If
-// serviceName is "" (context not specified), return overrides directly.
-func MergeServiceContext(p *Plan, serviceName string, overrides ContextOptions) (ContextOptions, error) {
-	if serviceName == "" {
-		return overrides, nil
-	}
-	var service *Service
-	for _, s := range p.Services {
-		if s.Name == serviceName {
-			service = s
-			break
-		}
-	}
-	if service == nil {
-		return ContextOptions{}, fmt.Errorf("context service %q not found", serviceName)
-	}
-
-	// Start with the config values from the context service.
-	merged := ContextOptions{
-		Environment: make(map[string]string),
-	}
-	for k, v := range service.Environment {
-		merged.Environment[k] = v
-	}
-	if service.UserID != nil {
-		merged.UserID = copyIntPtr(service.UserID)
-	}
-	merged.User = service.User
-	if service.GroupID != nil {
-		merged.GroupID = copyIntPtr(service.GroupID)
-	}
-	merged.Group = service.Group
-	merged.WorkingDir = service.WorkingDir
-
-	// Merge in fields from the overrides, if set.
-	for k, v := range overrides.Environment {
-		merged.Environment[k] = v
-	}
-	if overrides.UserID != nil {
-		merged.UserID = copyIntPtr(overrides.UserID)
-	}
-	if overrides.User != "" {
-		merged.User = overrides.User
-	}
-	if overrides.GroupID != nil {
-		merged.GroupID = copyIntPtr(overrides.GroupID)
-	}
-	if overrides.Group != "" {
-		merged.Group = overrides.Group
-	}
-	if overrides.WorkingDir != "" {
-		merged.WorkingDir = overrides.WorkingDir
-	}
-
-	return merged, nil
-}
-
-// ContextOptions holds service context config fields.
-type ContextOptions struct {
-	Environment map[string]string
-	UserID      *int
-	User        string
-	GroupID     *int
-	Group       string
-	WorkingDir  string
-}
-
-func copyIntPtr(p *int) *int {
-	if p == nil {
-		return nil
-	}
-	copied := *p
-	return &copied
 }

@@ -10,19 +10,19 @@ import (
 	"time"
 
 	"github.com/canonical/pebble/internals/logger"
+	"github.com/canonical/pebble/internals/overlord/planstate"
 	"github.com/canonical/pebble/internals/overlord/restart"
 	"github.com/canonical/pebble/internals/overlord/state"
-	"github.com/canonical/pebble/internals/overlord/planstate"
 	"github.com/canonical/pebble/internals/plan"
 	"github.com/canonical/pebble/internals/reaper"
 	"github.com/canonical/pebble/internals/servicelog"
 )
 
 type ServiceManager struct {
-	state     *state.State
-	runner    *state.TaskRunner
-	plan      *plan.Plan
-	planMgr   *planstate.PlanManager
+	state   *state.State
+	runner  *state.TaskRunner
+	plan    *plan.Plan
+	planMgr *planstate.PlanManager
 
 	servicesLock sync.Mutex
 	services     map[string]*serviceData

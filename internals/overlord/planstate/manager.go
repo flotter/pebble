@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/canonical/pebble/internals/plan"
 	"github.com/canonical/pebble/internals/overlord/state"
+	"github.com/canonical/pebble/internals/plan"
 )
 
 // PlanFunc is the type of function used by NotifyPlanChanged.
@@ -33,9 +33,9 @@ type PlanManager struct {
 
 func NewManager(s *state.State, runner *state.TaskRunner, pebbleDir string) (*PlanManager, error) {
 	manager := &PlanManager{
-		state:         s,
-		runner:        runner,
-		pebbleDir:     pebbleDir,
+		state:     s,
+		runner:    runner,
+		pebbleDir: pebbleDir,
 	}
 
 	return manager, nil
