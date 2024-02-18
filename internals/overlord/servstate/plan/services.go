@@ -450,3 +450,136 @@ func copyIntPtr(p *int) *int {
 	copied := *p
 	return &copied
 }
+
+/////////////// -------------
+
+
+
+		for name, service := range layer.Services {
+			switch service.Override {
+			case MergeOverride:
+				if old, ok := combined.Services[name]; ok {
+					copied := old.Copy()
+					copied.Merge(service)
+					combined.Services[name] = copied
+					break
+				}
+				fallthrough
+			case ReplaceOverride:
+				combined.Services[name] = service.Copy()
+			case UnknownOverride:
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`layer %q must define "override" for service %q`,
+						layer.Label, service.Name),
+				}
+			default:
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`layer %q has invalid "override" value for service %q`,
+						layer.Label, service.Name),
+				}
+			}
+		}
+
+
+
+	// Ensure fields in combined layers validate correctly (and set defaults).
+	for name, service := range combined.Services {
+		if service.Command == "" {
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`plan must define "command" for service %q`, name),
+			}
+		}
+		_, _, err := service.ParseCommand()
+		if err != nil {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("plan service %q command invalid: %v", name, err),
+			}
+		}
+		if !validServiceAction(service.OnSuccess, ActionFailureShutdown) {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("plan service %q on-success action %q invalid", name, service.OnSuccess),
+			}
+		}
+		if !validServiceAction(service.OnFailure, ActionSuccessShutdown) {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("plan service %q on-failure action %q invalid", name, service.OnFailure),
+			}
+		}
+		for _, action := range service.OnCheckFailure {
+			if !validServiceAction(action, ActionSuccessShutdown) {
+				return nil, &FormatError{
+					Message: fmt.Sprintf("plan service %q on-check-failure action %q invalid", name, action),
+				}
+			}
+		}
+		if !service.BackoffDelay.IsSet {
+			service.BackoffDelay.Value = defaultBackoffDelay
+		}
+		if !service.BackoffFactor.IsSet {
+			service.BackoffFactor.Value = defaultBackoffFactor
+		} else if service.BackoffFactor.Value < 1 {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("plan service %q backoff-factor must be 1.0 or greater, not %g", name, service.BackoffFactor.Value),
+			}
+		}
+		if !service.BackoffLimit.IsSet {
+			service.BackoffLimit.Value = defaultBackoffLimit
+		}
+
+	}
+
+
+	// Ensure combined layers don't have cycles.
+	err := combined.checkCycles()
+	if err != nil {
+		return nil, err
+	}
+
+
+func (l *Layer) checkCycles() error {
+	var names []string
+	for name := range l.Services {
+		names = append(names, name)
+	}
+	_, err := order(l.Services, names, false)
+	return err
+}
+
+////---- parselayer
+	
+	for name, service := range layer.Services {
+		if name == "" {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("cannot use empty string as service name"),
+			}
+		}
+		if name == "pebble" {
+			// Disallow service name "pebble" to avoid ambiguity (for example,
+			// in log output).
+			return nil, &FormatError{
+				Message: fmt.Sprintf("cannot use reserved service name %q", name),
+			}
+		}
+		// Deprecated service names
+		if name == "all" || name == "default" || name == "none" {
+			logger.Noticef("Using keyword %q as a service name is deprecated", name)
+		}
+		if strings.HasPrefix(name, "-") {
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`cannot use service name %q: starting with "-" not allowed`, name),
+			}
+		}
+		if service == nil {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("service object cannot be null for service %q", name),
+			}
+		}
+		service.Name = name
+	}
+
+
+
+	err = layer.checkCycles()
+	if err != nil {
+		return nil, err
+	}

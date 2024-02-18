@@ -23,6 +23,13 @@ import (
 
 func Test(t *testing.T) { TestingT(t) }
 
-type S struct{}
+type S struct {
+}
 
 var _ = Suite(&S{})
+
+func (s *S) SetUpTest(c *C) {
+}
+
+func (s *S) TearDownTest(c *C) {
+}

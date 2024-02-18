@@ -236,3 +236,132 @@ func copyIntPtr(p *int) *int {
 	copied := *p
 	return &copied
 }
+
+///////// -----------------
+
+
+		for name, check := range layer.Checks {
+			switch check.Override {
+			case MergeOverride:
+				if old, ok := combined.Checks[name]; ok {
+					copied := old.Copy()
+					copied.Merge(check)
+					combined.Checks[name] = copied
+					break
+				}
+				fallthrough
+			case ReplaceOverride:
+				combined.Checks[name] = check.Copy()
+			case UnknownOverride:
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`layer %q must define "override" for check %q`,
+						layer.Label, check.Name),
+				}
+			default:
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`layer %q has invalid "override" value for check %q`,
+						layer.Label, check.Name),
+				}
+			}
+		}
+	
+
+
+	for name, check := range combined.Checks {
+		if check.Level != UnsetLevel && check.Level != AliveLevel && check.Level != ReadyLevel {
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`plan check %q level must be "alive" or "ready"`, name),
+			}
+		}
+		if !check.Period.IsSet {
+			check.Period.Value = defaultCheckPeriod
+		} else if check.Period.Value == 0 {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("plan check %q period must not be zero", name),
+			}
+		}
+		if !check.Timeout.IsSet {
+			check.Timeout.Value = defaultCheckTimeout
+		} else if check.Timeout.Value == 0 {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("plan check %q timeout must not be zero", name),
+			}
+		} else if check.Timeout.Value >= check.Period.Value {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("plan check %q timeout must be less than period", name),
+			}
+		}
+		if check.Threshold == 0 {
+			// Default number of failures in a row before check triggers
+			// action, default is >1 to avoid flapping due to glitches. For
+			// what it's worth, Kubernetes probes uses a default of 3 too.
+			check.Threshold = defaultCheckThreshold
+		}
+
+		numTypes := 0
+		if check.HTTP != nil {
+			if check.HTTP.URL == "" {
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`plan must set "url" for http check %q`, name),
+				}
+			}
+			numTypes++
+		}
+		if check.TCP != nil {
+			if check.TCP.Port == 0 {
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`plan must set "port" for tcp check %q`, name),
+				}
+			}
+			numTypes++
+		}
+		if check.Exec != nil {
+			if check.Exec.Command == "" {
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`plan must set "command" for exec check %q`, name),
+				}
+			}
+			_, err := shlex.Split(check.Exec.Command)
+			if err != nil {
+				return nil, &FormatError{
+					Message: fmt.Sprintf("plan check %q command invalid: %v", name, err),
+				}
+			}
+			_, contextExists := combined.Services[check.Exec.ServiceContext]
+			if check.Exec.ServiceContext != "" && !contextExists {
+				return nil, &FormatError{
+					Message: fmt.Sprintf("plan check %q service context specifies non-existent service %q",
+						name, check.Exec.ServiceContext),
+				}
+			}
+			_, _, err = osutil.NormalizeUidGid(check.Exec.UserID, check.Exec.GroupID, check.Exec.User, check.Exec.Group)
+			if err != nil {
+				return nil, &FormatError{
+					Message: fmt.Sprintf("plan check %q has invalid user/group: %v", name, err),
+				}
+			}
+			numTypes++
+		}
+		if numTypes != 1 {
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`plan must specify one of "http", "tcp", or "exec" for check %q`, name),
+			}
+		}
+	}
+
+// --- parselayer
+	
+
+for name, check := range layer.Checks {
+		if name == "" {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("cannot use empty string as check name"),
+			}
+		}
+		if check == nil {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("check object cannot be null for check %q", name),
+			}
+		}
+		check.Name = name
+	}

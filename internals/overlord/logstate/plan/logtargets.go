@@ -81,3 +81,98 @@ func (t *LogTarget) Merge(other *LogTarget) {
 		t.Labels[k] = v
 	}
 }
+
+///////////// -----------------
+
+
+
+		for name, target := range layer.LogTargets {
+			switch target.Override {
+			case MergeOverride:
+				if old, ok := combined.LogTargets[name]; ok {
+					copied := old.Copy()
+					copied.Merge(target)
+					combined.LogTargets[name] = copied
+					break
+				}
+				fallthrough
+			case ReplaceOverride:
+				combined.LogTargets[name] = target.Copy()
+			case UnknownOverride:
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`layer %q must define "override" for log target %q`,
+						layer.Label, target.Name),
+				}
+			default:
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`layer %q has invalid "override" value for log target %q`,
+						layer.Label, target.Name),
+				}
+			}
+		}
+	}
+
+
+
+	for name, target := range combined.LogTargets {
+		switch target.Type {
+		case LokiTarget, SyslogTarget:
+			// valid, continue
+		case UnsetLogTarget:
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`plan must define "type" (%q or %q) for log target %q`,
+					LokiTarget, SyslogTarget, name),
+			}
+		default:
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`log target %q has unsupported type %q, must be %q or %q`,
+					name, target.Type, LokiTarget, SyslogTarget),
+			}
+		}
+
+		// Validate service names specified in log target
+		for _, serviceName := range target.Services {
+			serviceName = strings.TrimPrefix(serviceName, "-")
+			if serviceName == "all" {
+				continue
+			}
+			if _, ok := combined.Services[serviceName]; ok {
+				continue
+			}
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`log target %q specifies unknown service %q`,
+					target.Name, serviceName),
+			}
+		}
+
+		if target.Location == "" {
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`plan must define "location" for log target %q`, name),
+			}
+		}
+	}
+
+
+// -- parselayer
+	
+for name, target := range layer.LogTargets {
+		if name == "" {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("cannot use empty string as log target name"),
+			}
+		}
+		if target == nil {
+			return nil, &FormatError{
+				Message: fmt.Sprintf("log target object cannot be null for log target %q", name),
+			}
+		}
+		for labelName := range target.Labels {
+			// 'pebble_*' labels are reserved
+			if strings.HasPrefix(labelName, "pebble_") {
+				return nil, &FormatError{
+					Message: fmt.Sprintf(`log target %q: label %q uses reserved prefix "pebble_"`, name, labelName),
+				}
+			}
+		}
+		target.Name = name
+	}
