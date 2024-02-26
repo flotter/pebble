@@ -164,6 +164,15 @@ func (l *Layer) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// MarshalYAML presents a layer in YAML
+func (l *Layer) MarshalYAML() (interface{}, error) {
+	result := make(map[string]interface{})
+	for key, part := range l.Parts {
+		result[string(key)] = part
+	}
+	return result, nil
+}
+
 // Part returns a part from a specific layer. This is a helper method
 // to allow parts to validate a plan by looking at other parts. This
 // should only be used in the context of the combined part layer.
@@ -177,7 +186,7 @@ func (l *Layer) Part(name PartName) (part Part, err error) {
 // NonEmptyParts provides an ordered list of parts which actually contains
 // information following an unmarshal attempt to load a layer.
 func (l *Layer) NonEmptyParts() []PartName {
-	updated := []PartName{}
+	var updated []PartName
 	for _, name := range l.PartsOrder {
 		if l.Parts[name].IsNonEmpty() {
 			updated = append(updated, name)
@@ -531,12 +540,7 @@ func (p *Plan) Part(name PartName) (part Part, err error) {
 	return nil, fmt.Errorf("cannot find part %q in plan", name)
 }
 
-// Summary returns the combined plan summary
-func (p *Plan) Summary() string {
-	return p.Combined.Summary
-}
-
-// Description returns the combined plan description
-func (p *Plan) Description() string {
-	return p.Combined.Description
+// Plan returns the combined plan view
+func (p *Plan) Plan() (combined *Layer) {
+	return p.Combined
 }

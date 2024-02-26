@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Canonical Ltd
+// Copyright (c) 2024 Canonical Ltd
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	. "gopkg.in/check.v1"
+	"gopkg.in/yaml.v3"
 
 	"github.com/canonical/pebble/internals/plan"
 )
@@ -33,7 +34,7 @@ type planInput struct {
 	order        int
 	label        string
 	yaml         string
-	updatedParts []string // Only considered for appends and udpates
+	updatedParts []plan.PartName // Only considered for appends and udpates
 }
 
 // planResult represents the combined plan
@@ -49,15 +50,19 @@ type planResult struct {
 var planTests = []struct {
 	planTypes        []plan.PartType
 	files            []*planInput
-	fileUpdatedParts []string
+	fileUpdatedParts []plan.PartName
 	appends          []*planInput
 	updates          []*planInput
 
 	result      *planResult
+	resultYaml  string
 	errorString string
 }{
 	// Index 0: No Parts
-	{},
+	{
+		resultYaml: string(reindent(`
+			{}`)),
+	},
 	// Index 1: Invalid Part order
 	{
 		planTypes: []plan.PartType{
@@ -72,6 +77,9 @@ var planTests = []struct {
 			&partYType{},
 			&partXType{},
 		},
+		resultYaml: string(reindent(`
+			x-key: {}
+			y-key: {}`)),
 	},
 	// Index 3: Load file layers invalid part
 	{
@@ -157,7 +165,7 @@ var planTests = []struct {
 				yaml: `
 					summary: x
 					description: desc-x
-					x:
+					x-key:
 						z1:
 							override: replace
 							a: a
@@ -180,12 +188,12 @@ var planTests = []struct {
 				yaml: `
 					summary: x
 					description: desc-x
-					x:
+					x-key:
 						x1:
 							override: replace
 							a: a
 							b: b
-							y:
+							y-key:
 							  - y2
 				`,
 			},
@@ -195,7 +203,7 @@ var planTests = []struct {
 				yaml: `
 					summary: y
 					description: desc-y
-					y:
+					y-key:
 						y1:
 							override: replace
 							a: a
@@ -218,12 +226,12 @@ var planTests = []struct {
 				yaml: `
 					summary: x
 					description: desc-x
-					x:
+					x-key:
 						x1:
 							override: replace
 							a: a
 							b: b
-							y:
+							y-key:
 							  - y1
 				`,
 			},
@@ -233,13 +241,17 @@ var planTests = []struct {
 				yaml: `
 					summary: y
 					description: desc-y
-					y:
+					y-key:
 						y1:
 							override: replace
 							a: a
 							b: b
 				`,
 			},
+		},
+		fileUpdatedParts: []plan.PartName{
+			"y-key",
+			"x-key",
 		},
 		result: &planResult{
 			summary: "y",
@@ -266,6 +278,19 @@ var planTests = []struct {
 				},
 			},
 		},
+		resultYaml: string(reindent(`
+			x-key:
+				x1:
+					override: replace
+					a: a
+					b: b
+					y-key:
+						- y1
+			y-key:
+				y1:
+					override: replace
+					a: a
+					b: b`)),
 	},
 	// Index 9: Load file layers with appends
 	{
@@ -280,12 +305,12 @@ var planTests = []struct {
 				yaml: `
 					summary: x
 					description: desc-x
-					x:
+					x-key:
 						x1:
 							override: replace
 							a: a
 							b: b
-							y:
+							y-key:
 							  - y1
 				`,
 			},
@@ -295,13 +320,17 @@ var planTests = []struct {
 				yaml: `
 					summary: y
 					description: desc-y
-					y:
+					y-key:
 						y1:
 							override: replace
 							a: a
 							b: b
 				`,
 			},
+		},
+		fileUpdatedParts: []plan.PartName{
+			"y-key",
+			"x-key",
 		},
 		appends: []*planInput{
 			&planInput{
@@ -318,17 +347,21 @@ var planTests = []struct {
 				yaml: `
 					summary: y-append
 					description: desc-y
-					x:
+					x-key:
 						x1:
 							override: merge
-							y:
+							y-key:
 							  - y2
-					y:
+					y-key:
 						y2:
 							override: replace
 							a: a
 							b: b
 				`,
+				updatedParts: []plan.PartName{
+					"y-key",
+					"x-key",
+				},
 			},
 		},
 		result: &planResult{
@@ -362,6 +395,24 @@ var planTests = []struct {
 				},
 			},
 		},
+		resultYaml: string(reindent(`
+			x-key:
+				x1:
+					override: replace
+					a: a
+					b: b
+					y-key:
+						- y1
+						- y2
+			y-key:
+				y1:
+					override: replace
+					a: a
+					b: b
+				y2:
+					override: replace
+					a: a
+					b: b`)),
 	},
 	// Index 10: Load file layers with appends and updates
 	{
@@ -376,12 +427,12 @@ var planTests = []struct {
 				yaml: `
 					summary: x
 					description: desc-x
-					x:
+					x-key:
 						x1:
 							override: replace
 							a: a
 							b: b
-							y:
+							y-key:
 							  - y1
 				`,
 			},
@@ -391,13 +442,17 @@ var planTests = []struct {
 				yaml: `
 					summary: y
 					description: desc-y
-					y:
+					y-key:
 						y1:
 							override: replace
 							a: a
 							b: b
 				`,
 			},
+		},
+		fileUpdatedParts: []plan.PartName{
+			"y-key",
+			"x-key",
 		},
 		appends: []*planInput{
 			&planInput{
@@ -414,17 +469,21 @@ var planTests = []struct {
 				yaml: `
 					summary: y-append
 					description: desc-y
-					x:
+					x-key:
 						x1:
 							override: merge
-							y:
+							y-key:
 							  - y2
-					y:
+					y-key:
 						y2:
 							override: replace
 							a: a
 							b: b
 				`,
+				updatedParts: []plan.PartName{
+					"y-key",
+					"x-key",
+				},
 			},
 		},
 		updates: []*planInput{
@@ -434,11 +493,14 @@ var planTests = []struct {
 				yaml: `
 					summary: x
 					description: desc-x
-					x:
+					x-key:
 						x1:
 							override: replace
 							a: c
 				`,
+				updatedParts: []plan.PartName{
+					"x-key",
+				},
 			},
 		},
 		result: &planResult{
@@ -470,6 +532,22 @@ var planTests = []struct {
 				},
 			},
 		},
+		resultYaml: string(reindent(`
+			x-key:
+				x1:
+					override: replace
+					a: c
+					y-key:
+						- y2
+			y-key:
+				y1:
+					override: replace
+					a: a
+					b: b
+				y2:
+					override: replace
+					a: a
+					b: b`)),
 	},
 }
 
@@ -484,7 +562,7 @@ func (s *S) TestPlan(c *C) {
 
 		p := plan.NewPlan(baseDir)
 
-		fail := func() error {
+		fail := func(c *C) error {
 			var err error
 
 			// Add types
@@ -495,10 +573,13 @@ func (s *S) TestPlan(c *C) {
 			}
 
 			// Load the plan layers
-			_, err = p.Load()
+			chg, err := p.Load()
 			if err != nil {
 				return err
 			}
+
+			// Check the returned updated parts
+			c.Assert(chg, DeepEquals, planTest.fileUpdatedParts)
 
 			// Process the appends
 			for _, layer := range planTest.appends {
@@ -506,10 +587,13 @@ func (s *S) TestPlan(c *C) {
 				if err != nil {
 					return err
 				}
-				_, err = p.AppendLayer(newLayer)
+				chg, err := p.AppendLayer(newLayer)
 				if err != nil {
 					return err
 				}
+
+				// Check the returned updated parts
+				c.Assert(chg, DeepEquals, layer.updatedParts)
 			}
 
 			// Process the updates
@@ -518,37 +602,46 @@ func (s *S) TestPlan(c *C) {
 				if err != nil {
 					return err
 				}
-				_, err = p.UpdateLayer(newLayer)
+				chg, err := p.UpdateLayer(newLayer)
 				if err != nil {
 					return err
 				}
+
+				// Check the returned updated parts
+				c.Assert(chg, DeepEquals, layer.updatedParts)
 			}
 
 			return nil
-		}()
+		}(c)
 
 		if fail != nil {
 			c.Assert(fail, ErrorMatches, planTest.errorString)
-		}
+		} else {
 
-		// Check the plan against the test result
-		if planTest.result != nil {
-			c.Assert(p.Summary(), Equals, planTest.result.summary)
-			c.Assert(p.Description(), Equals, planTest.result.desc)
+			if planTest.result != nil {
+				// Check the plan against the test result
+				c.Assert(p.Plan().Summary, Equals, planTest.result.summary)
+				c.Assert(p.Plan().Description, Equals, planTest.result.desc)
 
-			// PartX
-			partX, err := p.Part(XKey)
-			c.Assert(err, IsNil)
-			concreteX, err := ToPartX(partX)
-			c.Assert(err, IsNil)
-			c.Assert(concreteX.Entries, DeepEquals, planTest.result.x.Entries)
+				// PartX
+				partX, err := p.Part(XKey)
+				c.Assert(err, IsNil)
+				concreteX, err := ToPartX(partX)
+				c.Assert(err, IsNil)
+				c.Assert(concreteX.Entries, DeepEquals, planTest.result.x.Entries)
 
-			// PartY
-			partY, err := p.Part(YKey)
+				// PartY
+				partY, err := p.Part(YKey)
+				c.Assert(err, IsNil)
+				concreteY, err := ToPartY(partY)
+				c.Assert(err, IsNil)
+				c.Assert(concreteY.Entries, DeepEquals, planTest.result.y.Entries)
+			}
+
+			// YAML validate
+			planYAML, err := yaml.Marshal(p.Plan())
 			c.Assert(err, IsNil)
-			concreteY, err := ToPartY(partY)
-			c.Assert(err, IsNil)
-			c.Assert(concreteY.Entries, DeepEquals, planTest.result.y.Entries)
+			c.Assert(string(planYAML), Equals, planTest.resultYaml)
 		}
 	}
 }
@@ -557,7 +650,7 @@ func (s *S) TestPlan(c *C) {
 
 // Validation of X depend on access to Y.
 
-const XKey plan.PartName = "x"
+const XKey plan.PartName = "x-key"
 
 func ToPartX(part plan.Part) (*PartX, error) {
 	partType, ok := part.(*PartX)
@@ -673,8 +766,8 @@ type X struct {
 	Name     string        `yaml:"-"`
 	Override plan.Override `yaml:"override,omitempty"`
 	A        string        `yaml:"a,omitempty"`
-	B        string        `yaml:"b"`
-	Y        []string      `yaml:"y,omitempty"`
+	B        string        `yaml:"b,omitempty"`
+	Y        []string      `yaml:"y-key,omitempty"`
 }
 
 func (x *X) Copy() *X {
@@ -697,7 +790,7 @@ func (x *X) Merge(other *X) {
 
 // Validation of Y has no dependencies on other Parts.
 
-const YKey plan.PartName = "y"
+const YKey plan.PartName = "y-key"
 
 func ToPartY(part plan.Part) (*PartY, error) {
 	partType, ok := part.(*PartY)
@@ -786,7 +879,7 @@ type Y struct {
 	Name     string        `yaml:"-"`
 	Override plan.Override `yaml:"override,omitempty"`
 	A        string        `yaml:"a,omitempty"`
-	B        string        `yaml:"b"`
+	B        string        `yaml:"b,omitempty"`
 }
 
 func (y *Y) Copy() *Y {

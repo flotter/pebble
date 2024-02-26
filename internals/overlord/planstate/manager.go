@@ -8,17 +8,14 @@ import (
 	"github.com/canonical/pebble/internals/plan"
 )
 
-// PlanFunc is the type of function used by NotifyPlanChanged.
-type PlanFunc func(p *plan.Plan)
-
 type PlanManager struct {
 	state     *state.State
 	runner    *state.TaskRunner
 	pebbleDir string
 
-	planLock     sync.Mutex
+	mu           sync.Mutex
 	plan         *plan.Plan
-	planHandlers []PlanFunc
+	handlers     []PlanFunc
 }
 
 func NewManager(s *state.State, runner *state.TaskRunner, pebbleDir string) (*PlanManager, error) {
@@ -27,61 +24,82 @@ func NewManager(s *state.State, runner *state.TaskRunner, pebbleDir string) (*Pl
 		runner:    runner,
 		pebbleDir: pebbleDir,
 	}
-
 	return manager, nil
 }
 
-// NotifyPlanChanged adds f to the list of functions that are called whenever
-// the plan is updated.
+// PlanChangedFunc defines a plan update handler. 
+type PlanChangedFunc func(p *plan.Plan, changedFacets []plan.PartName)
+
+// NotifyPlanChanged adds a function to be called whenever the plan changes.
 func (m *PlanManager) NotifyPlanChanged(f PlanFunc) {
-	fmt.Println("+ planstate NotifyPlanChanged")
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.planHandlers = append(m.planHandlers, f)
 }
 
-func (m *PlanManager) updatePlan(plan *plan.Plan) {
-	m.plan = plan
-	for _, f := range m.planHandlers {
-		f(plan)
-	}
+// AddFacet adds a plan facet to the plan. Facets have to be added by the
+// respective managers, in the order or dependency.
+func (m *PlanManager) AddFacet(facet plan.PartType) error {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    return m.plan.AddPartType(facet)
 }
 
-func (m *PlanManager) reloadPlan() error {
-	plan, err := plan.ReadDir(m.pebbleDir)
-	if err != nil {
-		return err
-	}
-	m.updatePlan(plan)
-	return nil
+// Load the provided layers from storage and updates the plan to
+// point to the combined view. ChangedFacets contains a list of
+// facets that got non-nil values after the load.
+func (m *PlanManager) Load() (changedFacets []PartName, err error) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    return m.plan.Load()
 }
 
-// Plan returns the configuration plan.
-func (m *PlanManager) Plan() (*plan.Plan, error) {
-	fmt.Println("+ planstate Plan")
-	releasePlan, err := m.acquirePlan()
-	if err != nil {
-		return nil, err
-	}
-	defer releasePlan()
-	return m.plan, nil
+// ParseLayer creates a new layer from YAML data supplied. 
+func (m *PlanManager) ParseLayer(order int, label string, data []byte) (*Layer, error) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    return m.plan.ParseLayer(order, label, data)
 }
 
-func (m *PlanManager) acquirePlan() (release func(), err error) {
-	m.planLock.Lock()
-	if m.plan == nil {
-		err := m.reloadPlan()
-		if err != nil {
-			m.planLock.Unlock()
-			return nil, err
-		}
-	}
-	released := false
-	release = func() {
-		if !released {
-			released = true
-			m.planLock.Unlock()
-		}
-	}
-	return release, nil
+// LayerExists can be used to decide between updating an existing layer or
+// appending a new layer.
+func (m *PlanManager) LayerExists(label string) bool {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    return m.plan.LayerExists(label)
+}
+
+// AppendLayer adds a new layer on top the existing layers, and then re-creates
+// a new updated combined layer. The plan is updated to reflect the new
+// combined layer.
+func (m *PlanManager) AppendLayer(layer *Layer) (changed []PartName, err error) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    return m.plan.AppendLayer(layer)
+}
+
+// UpdateLayer modifies an existing layer, and then re-creates a new updated
+// combined layer. The plan is updated to reflect the new combined layer.
+func (m *PlanManager) UpdateLayer(layer *Layer) (changed []PartName, err error) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    return m.plan.UpdateLayer(layer)
+}
+
+
+// Facet provides a way to request a specific facet of the plan.
+func (m *PlanManager) Facet(name plan.PartName) (facet plan.Part, err error) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    return m.plan.Part(name)
+}
+
+// Plan provides a way to to return the complete plan. This can be used
+// with marshal to produce a YAML view of the plan.
+func (m *PlanManager) Plan() *plan.Plan {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    return m.plan
 }
 
 // Ensure implements StateManager.Ensure.
