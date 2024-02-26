@@ -666,7 +666,7 @@ func (part *PartX) Combine(other plan.Part) error {
 }
 
 func (part *PartX) IsNonEmpty() bool {
-	return true
+	return len(part.Entries) != 0
 }
 
 type X struct {
@@ -779,7 +779,7 @@ func (part *PartY) Combine(other plan.Part) error {
 }
 
 func (part *PartY) IsNonEmpty() bool {
-	return true
+	return len(part.Entries) != 0
 }
 
 type Y struct {
