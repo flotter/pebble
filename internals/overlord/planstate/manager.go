@@ -1,7 +1,6 @@
 package planstate
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/canonical/pebble/internals/overlord/state"
@@ -15,7 +14,7 @@ type PlanManager struct {
 
 	mu           sync.Mutex
 	plan         *plan.Plan
-	handlers     []PlanFunc
+	handlers     []PlanChangedFunc
 }
 
 func NewManager(s *state.State, runner *state.TaskRunner, pebbleDir string) (*PlanManager, error) {
@@ -28,13 +27,13 @@ func NewManager(s *state.State, runner *state.TaskRunner, pebbleDir string) (*Pl
 }
 
 // PlanChangedFunc defines a plan update handler. 
-type PlanChangedFunc func(p *plan.Plan, changedFacets []plan.PartName)
+type PlanChangedFunc func(combinedPlan *plan.Layer, changedFacets []plan.PartName)
 
 // NotifyPlanChanged adds a function to be called whenever the plan changes.
-func (m *PlanManager) NotifyPlanChanged(f PlanFunc) {
+func (m *PlanManager) NotifyPlanChanged(f PlanChangedFunc) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.planHandlers = append(m.planHandlers, f)
+	m.handlers = append(m.handlers, f)
 }
 
 // AddFacet adds a plan facet to the plan. Facets have to be added by the
@@ -48,14 +47,14 @@ func (m *PlanManager) AddFacet(facet plan.PartType) error {
 // Load the provided layers from storage and updates the plan to
 // point to the combined view. ChangedFacets contains a list of
 // facets that got non-nil values after the load.
-func (m *PlanManager) Load() (changedFacets []PartName, err error) {
+func (m *PlanManager) Load() (changedFacets []plan.PartName, err error) {
     m.mu.Lock()
     defer m.mu.Unlock()
     return m.plan.Load()
 }
 
 // ParseLayer creates a new layer from YAML data supplied. 
-func (m *PlanManager) ParseLayer(order int, label string, data []byte) (*Layer, error) {
+func (m *PlanManager) ParseLayer(order int, label string, data []byte) (*plan.Layer, error) {
     m.mu.Lock()
     defer m.mu.Unlock()
     return m.plan.ParseLayer(order, label, data)
@@ -72,18 +71,33 @@ func (m *PlanManager) LayerExists(label string) bool {
 // AppendLayer adds a new layer on top the existing layers, and then re-creates
 // a new updated combined layer. The plan is updated to reflect the new
 // combined layer.
-func (m *PlanManager) AppendLayer(layer *Layer) (changed []PartName, err error) {
+func (m *PlanManager) AppendLayer(layer *plan.Layer) error {
     m.mu.Lock()
+
     defer m.mu.Unlock()
-    return m.plan.AppendLayer(layer)
+	changedFacets, err := m.plan.AppendLayer(layer)
+	if err != nil {
+		return err
+	}
+
+	m.notify(changedFacets)
+	return nil
 }
 
 // UpdateLayer modifies an existing layer, and then re-creates a new updated
 // combined layer. The plan is updated to reflect the new combined layer.
-func (m *PlanManager) UpdateLayer(layer *Layer) (changed []PartName, err error) {
+func (m *PlanManager) UpdateLayer(layer *plan.Layer) error {
     m.mu.Lock()
     defer m.mu.Unlock()
-    return m.plan.UpdateLayer(layer)
+
+	changedFacets, err := m.plan.UpdateLayer(layer)
+	if err != nil {
+		return err
+	}
+
+	m.notify(changedFacets)
+	return nil
+ 
 }
 
 
@@ -96,10 +110,10 @@ func (m *PlanManager) Facet(name plan.PartName) (facet plan.Part, err error) {
 
 // Plan provides a way to to return the complete plan. This can be used
 // with marshal to produce a YAML view of the plan.
-func (m *PlanManager) Plan() *plan.Plan {
+func (m *PlanManager) Plan() *plan.Layer {
     m.mu.Lock()
     defer m.mu.Unlock()
-    return m.plan
+    return m.plan.Plan()
 }
 
 // Ensure implements StateManager.Ensure.
@@ -107,10 +121,26 @@ func (m *PlanManager) Ensure() error {
 	return nil
 }
 
-// Ensure implements StateManager.StartUp.
+// StartUp implements StateManager.StartUp.
 func (m *PlanManager) StartUp() error {
-	fmt.Println("+ planstate StartUp")
-	m.planLock.Lock()
-	defer m.planLock.Unlock()
-	return m.reloadPlan()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	changedFacets, err := m.Load()
+	if err != nil {
+		return err
+	}
+
+	m.notify(changedFacets)
+	return nil
+	
+}
+
+// notify requires the plan manager lock to already be in place
+func (m *PlanManager) notify(changed []plan.PartName) {
+	// Pass the combined layer and a list of all the changed facets to
+	// each notification subscriber.
+	for _, f := range m.handlers {
+		f(m.plan.Plan(), changed)
+	}
 }
