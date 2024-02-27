@@ -22,6 +22,7 @@ import (
 
 	"github.com/canonical/pebble/internals/logger"
 	"github.com/canonical/pebble/internals/plan"
+	"github.com/canonical/pebble/internals/overlord/checkstate/facet"
 )
 
 // CheckManager starts and manages the health checks.
@@ -48,12 +49,24 @@ func (m *CheckManager) NotifyCheckFailed(f FailureFunc) {
 
 // PlanChanged handles updates to the plan (server configuration),
 // stopping the previous checks and starting the new ones as required.
-func (m *CheckManager) PlanChanged(p *plan.Plan) {
+func (m *CheckManager) PlanChanged(plan *plan.Plan, changedFacets []plan.PartName) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
+	// Get new checks facet
+	f, err := plan.Part(facet.Key)
+	if err != nil {
+		// TODO: return error
+		panic("facets incompatible")
+	}
+	checks, err := facet.ToChecks(f)
+	if err != nil {
+		// TODO: return error
+		panic("facets incompatible")
+	}	
+
 	logger.Debugf("Configuring check manager (stopping %d, starting %d)",
-		len(m.checks), len(p.Checks))
+		len(m.checks), len(checks))
 
 	// First stop existing checks.
 	for _, check := range m.checks {
@@ -64,26 +77,26 @@ func (m *CheckManager) PlanChanged(p *plan.Plan) {
 	m.wg.Wait()
 
 	// Set the size of the next wait group
-	m.wg.Add(len(p.Checks))
+	m.wg.Add(len(checks))
 
 	// Then configure and start new checks.
-	checks := make(map[string]*checkData, len(p.Checks))
-	for name, config := range p.Checks {
+	newChecks := make(map[string]*checkData, len(checks))
+	for name, config := range checks {
 		ctx, cancel := context.WithCancel(context.Background())
 		check := &checkData{
 			config:  config,
-			checker: newChecker(config, p),
+			checker: newChecker(config, plan),
 			ctx:     ctx,
 			cancel:  cancel,
 			action:  m.callFailureHandlers,
 		}
-		checks[name] = check
+		newChecks[name] = check
 		go func() {
 			defer m.wg.Done()
 			check.loop()
 		}()
 	}
-	m.checks = checks
+	m.checks = newChecks
 }
 
 func (m *CheckManager) callFailureHandlers(name string) {
@@ -93,7 +106,7 @@ func (m *CheckManager) callFailureHandlers(name string) {
 }
 
 // newChecker creates a new checker of the configured type.
-func newChecker(config *plan.Check, p *plan.Plan) checker {
+func newChecker(config *facet.Check, plan *plan.Plan) checker {
 	switch {
 	case config.HTTP != nil:
 		return &httpChecker{
@@ -110,28 +123,41 @@ func newChecker(config *plan.Check, p *plan.Plan) checker {
 		}
 
 	case config.Exec != nil:
-		overrides := plan.ContextOptions{
-			Environment: config.Exec.Environment,
-			UserID:      config.Exec.UserID,
-			User:        config.Exec.User,
-			GroupID:     config.Exec.GroupID,
-			Group:       config.Exec.Group,
-			WorkingDir:  config.Exec.WorkingDir,
-		}
-		merged, err := plan.MergeServiceContext(p, config.Exec.ServiceContext, overrides)
-		if err != nil {
-			// Context service name has already been checked when plan was loaded.
-			panic("internal error: " + err.Error())
-		}
+// TODO
+//		overrides := plan.ContextOptions{
+//			Environment: config.Exec.Environment,
+//			UserID:      config.Exec.UserID,
+//			User:        config.Exec.User,
+//			GroupID:     config.Exec.GroupID,
+//			Group:       config.Exec.Group,
+//			WorkingDir:  config.Exec.WorkingDir,
+//		}
+//
+//		merged, err := plan.MergeServiceContext(p, config.Exec.ServiceContext, overrides)
+//		if err != nil {
+//			// Context service name has already been checked when plan was loaded.
+//			panic("internal error: " + err.Error())
+//		}
+//		return &execChecker{
+//			name:        config.Name,
+//			command:     config.Exec.Command,
+//			environment: merged.Environment,
+//			userID:      merged.UserID,
+//			user:        merged.User,
+//			groupID:     merged.GroupID,
+//			group:       merged.Group,
+//			workingDir:  merged.WorkingDir,
+//		}
+
 		return &execChecker{
 			name:        config.Name,
 			command:     config.Exec.Command,
-			environment: merged.Environment,
-			userID:      merged.UserID,
-			user:        merged.User,
-			groupID:     merged.GroupID,
-			group:       merged.Group,
-			workingDir:  merged.WorkingDir,
+			environment: config.Exec.Environment,
+			userID:      config.Exec.UserID,
+			user:        config.Exec.User,
+			groupID:     config.Exec.GroupID,
+			group:       config.Exec.Group,
+			workingDir:  config.Exec.WorkingDir,
 		}
 
 	default:
@@ -160,7 +186,7 @@ func (m *CheckManager) Checks() ([]*CheckInfo, error) {
 // CheckInfo provides status information about a single check.
 type CheckInfo struct {
 	Name         string
-	Level        plan.CheckLevel
+	Level        facet.CheckLevel
 	Status       CheckStatus
 	Failures     int
 	Threshold    int
@@ -177,7 +203,7 @@ const (
 
 // checkData holds state for an active health check.
 type checkData struct {
-	config  *plan.Check
+	config  *facet.Check
 	checker checker
 	ctx     context.Context
 	cancel  context.CancelFunc

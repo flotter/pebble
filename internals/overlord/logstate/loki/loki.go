@@ -28,8 +28,8 @@ import (
 
 	"github.com/canonical/pebble/cmd"
 	"github.com/canonical/pebble/internals/logger"
-	"github.com/canonical/pebble/internals/plan"
 	"github.com/canonical/pebble/internals/servicelog"
+	"github.com/canonical/pebble/internals/overlord/logstate/facet"
 )
 
 const (
@@ -39,7 +39,7 @@ const (
 
 type Client struct {
 	options    *ClientOptions
-	target     *plan.LogTarget
+	target     *facet.LogTarget
 	httpClient *http.Client
 
 	// To store log entries, keep a buffer of size 2*MaxRequestEntries with a
@@ -51,7 +51,7 @@ type Client struct {
 	labels map[string]json.RawMessage
 }
 
-func NewClient(target *plan.LogTarget) *Client {
+func NewClient(target *facet.LogTarget) *Client {
 	return NewClientWithOptions(target, &ClientOptions{})
 }
 
@@ -61,7 +61,7 @@ type ClientOptions struct {
 	MaxRequestEntries int
 }
 
-func NewClientWithOptions(target *plan.LogTarget, options *ClientOptions) *Client {
+func NewClientWithOptions(target *facet.LogTarget, options *ClientOptions) *Client {
 	options = fillDefaultOptions(options)
 	c := &Client{
 		options:    options,

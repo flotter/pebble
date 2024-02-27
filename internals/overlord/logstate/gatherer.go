@@ -23,6 +23,8 @@ import (
 	"gopkg.in/tomb.v2"
 
 	"github.com/canonical/pebble/internals/logger"
+	logsFacet "github.com/canonical/pebble/internals/overlord/logstate/facet"
+	servFacet "github.com/canonical/pebble/internals/overlord/servstate/facet"
 	"github.com/canonical/pebble/internals/overlord/logstate/loki"
 	"github.com/canonical/pebble/internals/plan"
 	"github.com/canonical/pebble/internals/servicelog"
@@ -87,17 +89,17 @@ type logGathererOptions struct {
 	timeoutCurrentFlush time.Duration
 	timeoutFinalFlush   time.Duration
 	// method to get a new client
-	newClient func(*plan.LogTarget) (logClient, error)
+	newClient func(*logsFacet.LogTarget) (logClient, error)
 }
 
-func newLogGatherer(target *plan.LogTarget) (*logGatherer, error) {
+func newLogGatherer(target *logsFacet.LogTarget) (*logGatherer, error) {
 	return newLogGathererInternal(target, &logGathererOptions{})
 }
 
 // newLogGathererInternal contains the actual creation code for a logGatherer.
 // This function is used in the real implementation, but also allows overriding
 // certain configuration values for testing.
-func newLogGathererInternal(target *plan.LogTarget, options *logGathererOptions) (*logGatherer, error) {
+func newLogGathererInternal(target *logsFacet.LogTarget, options *logGathererOptions) (*logGatherer, error) {
 	options = fillDefaultOptions(options)
 	client, err := options.newClient(target)
 	if err != nil {
@@ -142,6 +144,30 @@ func fillDefaultOptions(options *logGathererOptions) *logGathererOptions {
 // PlanChanged is called by the LogManager when the plan is changed, if this
 // gatherer's target exists in the new plan.
 func (g *logGatherer) PlanChanged(pl *plan.Plan, buffers map[string]*servicelog.RingBuffer) {
+	
+	// Get new log targets facet
+	l, err := plan.Part(logsFacet.Key)
+	if err != nil {
+		// TODO: return error
+		panic("facets incompatible")
+	}
+	logTargets, err := logsFacet.ToLogTargets(l)
+	if err != nil {
+		// TODO: return error
+		panic("facets incompatible")
+	}	
+	
+	// Get new services
+	s, err := plan.Part(servFacet.Key)
+	if err != nil {
+		// TODO: return error
+		panic("facets incompatible")
+	}
+	logTargets, err := logsFacet.ToSerices(s)
+	if err != nil {
+		// TODO: return error
+		panic("facets incompatible")
+	}	
 	target := pl.LogTargets[g.targetName]
 
 	// Remove old pullers
@@ -364,7 +390,7 @@ type logClient interface {
 	SetLabels(serviceName string, labels map[string]string)
 }
 
-func newLogClient(target *plan.LogTarget) (logClient, error) {
+func newLogClient(target *logsFacet.LogTarget) (logClient, error) {
 	switch target.Type {
 	case plan.LokiTarget:
 		return loki.NewClient(target), nil

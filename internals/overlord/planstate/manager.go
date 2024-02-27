@@ -27,7 +27,7 @@ func NewManager(s *state.State, runner *state.TaskRunner, pebbleDir string) (*Pl
 }
 
 // PlanChangedFunc defines a plan update handler. 
-type PlanChangedFunc func(combinedPlan *plan.Layer, changedFacets []plan.PartName)
+type PlanChangedFunc func(plan *plan.Plan, changedFacets []plan.PartName)
 
 // NotifyPlanChanged adds a function to be called whenever the plan changes.
 func (m *PlanManager) NotifyPlanChanged(f PlanChangedFunc) {
@@ -141,6 +141,6 @@ func (m *PlanManager) notify(changed []plan.PartName) {
 	// Pass the combined layer and a list of all the changed facets to
 	// each notification subscriber.
 	for _, f := range m.handlers {
-		f(m.plan.Plan(), changed)
+		f(m.plan, changed)
 	}
 }
