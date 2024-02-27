@@ -20,6 +20,7 @@ import (
 	"github.com/canonical/pebble/internals/logger"
 	"github.com/canonical/pebble/internals/plan"
 	"github.com/canonical/pebble/internals/servicelog"
+	"github.com/canonical/pebble/internals/overlord/logstate/facet"
 )
 
 type LogManager struct {
@@ -28,7 +29,7 @@ type LogManager struct {
 	buffers   map[string]*servicelog.RingBuffer
 	plan      *plan.Plan
 
-	newGatherer func(*plan.LogTarget) (*logGatherer, error)
+	newGatherer func(*facet.LogTarget) (*logGatherer, error)
 }
 
 func NewLogManager() *LogManager {
@@ -101,7 +102,7 @@ func (m *LogManager) ServiceStarted(service *plan.Service, buffer *servicelog.Ri
 
 	m.buffers[service.Name] = buffer
 	for _, gatherer := range m.gatherers {
-		target := m.plan.LogTargets[gatherer.targetName]
+		target := m.facet.LogTargets[gatherer.targetName]
 		if !service.LogsTo(target) {
 			continue
 		}

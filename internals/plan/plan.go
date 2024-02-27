@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Canonical Ltd
+// Copyright (c) 2024 Canonical Ltd
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,263 +20,58 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/canonical/x-go/strutil/shlex"
 	"gopkg.in/yaml.v3"
-
-	"github.com/canonical/pebble/internals/logger"
-	"github.com/canonical/pebble/internals/osutil"
 )
 
-const (
-	defaultBackoffDelay  = 500 * time.Millisecond
-	defaultBackoffFactor = 2.0
-	defaultBackoffLimit  = 30 * time.Second
-
-	defaultCheckPeriod    = 10 * time.Second
-	defaultCheckTimeout   = 3 * time.Second
-	defaultCheckThreshold = 3
-)
-
-type Plan struct {
-	Layers     []*Layer              `yaml:"-"`
-	Services   map[string]*Service   `yaml:"services,omitempty"`
-	Checks     map[string]*Check     `yaml:"checks,omitempty"`
-	LogTargets map[string]*LogTarget `yaml:"log-targets,omitempty"`
+// FormatError is the error returned when a part has a format error, such as
+// a missing "override" field.
+type FormatError struct {
+	Message string
 }
 
-type Layer struct {
-	Order       int                   `yaml:"-"`
-	Label       string                `yaml:"-"`
-	Summary     string                `yaml:"summary,omitempty"`
-	Description string                `yaml:"description,omitempty"`
-	Services    map[string]*Service   `yaml:"services,omitempty"`
-	Checks      map[string]*Check     `yaml:"checks,omitempty"`
-	LogTargets  map[string]*LogTarget `yaml:"log-targets,omitempty"`
+func (e *FormatError) Error() string {
+	return e.Message
 }
 
-type Service struct {
-	// Basic details
-	Name        string         `yaml:"-"`
-	Summary     string         `yaml:"summary,omitempty"`
-	Description string         `yaml:"description,omitempty"`
-	Startup     ServiceStartup `yaml:"startup,omitempty"`
-	Override    Override       `yaml:"override,omitempty"`
-	Command     string         `yaml:"command,omitempty"`
-
-	// Service dependencies
-	After    []string `yaml:"after,omitempty"`
-	Before   []string `yaml:"before,omitempty"`
-	Requires []string `yaml:"requires,omitempty"`
-
-	// Options for command execution
-	Environment map[string]string `yaml:"environment,omitempty"`
-	UserID      *int              `yaml:"user-id,omitempty"`
-	User        string            `yaml:"user,omitempty"`
-	GroupID     *int              `yaml:"group-id,omitempty"`
-	Group       string            `yaml:"group,omitempty"`
-	WorkingDir  string            `yaml:"working-dir,omitempty"`
-
-	// Auto-restart and backoff functionality
-	OnSuccess      ServiceAction            `yaml:"on-success,omitempty"`
-	OnFailure      ServiceAction            `yaml:"on-failure,omitempty"`
-	OnCheckFailure map[string]ServiceAction `yaml:"on-check-failure,omitempty"`
-	BackoffDelay   OptionalDuration         `yaml:"backoff-delay,omitempty"`
-	BackoffFactor  OptionalFloat            `yaml:"backoff-factor,omitempty"`
-	BackoffLimit   OptionalDuration         `yaml:"backoff-limit,omitempty"`
-	KillDelay      OptionalDuration         `yaml:"kill-delay,omitempty"`
+// LabelExists is the error returned by AppendLayer when a layer with that
+// label already exists.
+type LabelExists struct {
+	Label string
 }
 
-// Copy returns a deep copy of the service.
-func (s *Service) Copy() *Service {
-	copied := *s
-	copied.After = append([]string(nil), s.After...)
-	copied.Before = append([]string(nil), s.Before...)
-	copied.Requires = append([]string(nil), s.Requires...)
-	if s.Environment != nil {
-		copied.Environment = make(map[string]string)
-		for k, v := range s.Environment {
-			copied.Environment[k] = v
-		}
-	}
-	if s.UserID != nil {
-		copied.UserID = copyIntPtr(s.UserID)
-	}
-	if s.GroupID != nil {
-		copied.GroupID = copyIntPtr(s.GroupID)
-	}
-	if s.OnCheckFailure != nil {
-		copied.OnCheckFailure = make(map[string]ServiceAction)
-		for k, v := range s.OnCheckFailure {
-			copied.OnCheckFailure[k] = v
-		}
-	}
-	return &copied
+func (e *LabelExists) Error() string {
+	return fmt.Sprintf("layer %q already exists", e.Label)
 }
 
-// Merge merges the fields set in other into s.
-func (s *Service) Merge(other *Service) {
-	if other.Summary != "" {
-		s.Summary = other.Summary
-	}
-	if other.Description != "" {
-		s.Description = other.Description
-	}
-	if other.Startup != StartupUnknown {
-		s.Startup = other.Startup
-	}
-	if other.Command != "" {
-		s.Command = other.Command
-	}
-	if other.KillDelay.IsSet {
-		s.KillDelay = other.KillDelay
-	}
-	if other.UserID != nil {
-		s.UserID = copyIntPtr(other.UserID)
-	}
-	if other.User != "" {
-		s.User = other.User
-	}
-	if other.GroupID != nil {
-		s.GroupID = copyIntPtr(other.GroupID)
-	}
-	if other.Group != "" {
-		s.Group = other.Group
-	}
-	if other.WorkingDir != "" {
-		s.WorkingDir = other.WorkingDir
-	}
-	s.After = append(s.After, other.After...)
-	s.Before = append(s.Before, other.Before...)
-	s.Requires = append(s.Requires, other.Requires...)
-	for k, v := range other.Environment {
-		if s.Environment == nil {
-			s.Environment = make(map[string]string)
-		}
-		s.Environment[k] = v
-	}
-	if other.OnSuccess != "" {
-		s.OnSuccess = other.OnSuccess
-	}
-	if other.OnFailure != "" {
-		s.OnFailure = other.OnFailure
-	}
-	for k, v := range other.OnCheckFailure {
-		if s.OnCheckFailure == nil {
-			s.OnCheckFailure = make(map[string]ServiceAction)
-		}
-		s.OnCheckFailure[k] = v
-	}
-	if other.BackoffDelay.IsSet {
-		s.BackoffDelay = other.BackoffDelay
-	}
-	if other.BackoffFactor.IsSet {
-		s.BackoffFactor = other.BackoffFactor
-	}
-	if other.BackoffLimit.IsSet {
-		s.BackoffLimit = other.BackoffLimit
-	}
+// LabelMissing is the error returned by UpdateLayer when the requested layer
+// does not yet exist.
+type LabelMissing struct {
+	Label string
 }
 
-// Equal returns true when the two services are equal in value.
-func (s *Service) Equal(other *Service) bool {
-	if s == other {
-		return true
-	}
-	return reflect.DeepEqual(s, other)
+func (e *LabelMissing) Error() string {
+	return fmt.Sprintf("layer %q not found", e.Label)
 }
 
-// ParseCommand returns a service command as two stream of strings.
-// The base command is returned as a stream and the default arguments
-// in [ ... ] group is returned as another stream.
-func (s *Service) ParseCommand() (base, extra []string, err error) {
-	defer func() {
-		if err != nil {
-			err = fmt.Errorf("cannot parse service %q command: %w", s.Name, err)
-		}
-	}()
+// PartName uniquely describes a top-level part key, as used in the plan schema.
+type PartName string
 
-	args, err := shlex.Split(s.Command)
-	if err != nil {
-		return nil, nil, err
-	}
+// PartType describes a specific part type.
+type PartType interface {
+	// The top level YAML key for this part.
+	Key() PartName
 
-	var inBrackets, gotBrackets bool
+	// The parts on which this part type is dependant. They have to be
+	// available by the time this type is registered.
+	Wants() (parts []PartName)
 
-	for idx, arg := range args {
-		if inBrackets {
-			if arg == "[" {
-				return nil, nil, fmt.Errorf("cannot nest [ ... ] groups")
-			}
-			if arg == "]" {
-				inBrackets = false
-				continue
-			}
-			extra = append(extra, arg)
-			continue
-		}
-		if gotBrackets {
-			return nil, nil, fmt.Errorf("cannot have any arguments after [ ... ] group")
-		}
-		if arg == "[" {
-			if idx == 0 {
-				return nil, nil, fmt.Errorf("cannot start command with [ ... ] group")
-			}
-			inBrackets = true
-			gotBrackets = true
-			continue
-		}
-		if arg == "]" {
-			return nil, nil, fmt.Errorf("cannot have ] outside of [ ... ] group")
-		}
-		base = append(base, arg)
-	}
-
-	return base, extra, nil
+	// New create and return a new concrete part type instance.
+	New() Part
 }
-
-// CommandString returns a service command as a string after
-// appending the arguments in "extra" to the command in "base"
-func CommandString(base, extra []string) string {
-	output := shlex.Join(base)
-	if len(extra) > 0 {
-		output = output + " [ " + shlex.Join(extra) + " ]"
-	}
-	return output
-}
-
-// LogsTo returns true if the logs from s should be forwarded to target t.
-func (s *Service) LogsTo(t *LogTarget) bool {
-	// Iterate backwards through t.Services until we find something matching
-	// s.Name.
-	for i := len(t.Services) - 1; i >= 0; i-- {
-		switch t.Services[i] {
-		case s.Name:
-			return true
-		case ("-" + s.Name):
-			return false
-		case "all":
-			return true
-		case "-all":
-			return false
-		}
-	}
-	// Nothing matching the service name, so it was not specified.
-	return false
-}
-
-type ServiceStartup string
-
-const (
-	StartupUnknown  ServiceStartup = ""
-	StartupEnabled  ServiceStartup = "enabled"
-	StartupDisabled ServiceStartup = "disabled"
-)
 
 // Override specifies the layer override mechanism for an object.
 type Override string
@@ -287,745 +82,293 @@ const (
 	ReplaceOverride Override = "replace"
 )
 
-type ServiceAction string
+// Part defines an externally defined data structure that is compatible as
+// part of the global plan. A Part consists of Entries.
+type Part interface {
+	// ValidatePart allows adding additional rules beyond the typical YAML
+	// schema type mapping logic. This method should only be concerned with
+	// the part details in isolation, and is called immediately after the
+	// part data is unmarshalled.
+	ValidatePart() error
 
-const (
-	// Actions allowed in all contexts
-	ActionUnset    ServiceAction = ""
-	ActionRestart  ServiceAction = "restart"
-	ActionShutdown ServiceAction = "shutdown"
-	ActionIgnore   ServiceAction = "ignore"
+	// ValidatePlan performs validation on the complete plan by looking at
+	// the combined plan layer. Parts that does depend on other parts can
+	// use the combined layer to access details from other parts for
+	// validation purposes.
+	//
+	// This method is only called when the plan (combined layer) is about to
+	// get updated. It is not called when a individual layer is parsed.
+	ValidatePlan(combined *Layer) error
 
-	// Actions only allowed in specific contexts
-	ActionFailureShutdown ServiceAction = "failure-shutdown"
-	ActionSuccessShutdown ServiceAction = "success-shutdown"
-)
+	// Combine another part into itself, taking the override attribute for
+	// each part entry into account where applicable.
+	Combine(other Part) error
 
-// Check specifies configuration for a single health check.
-type Check struct {
-	// Basic details
-	Name     string     `yaml:"-"`
-	Override Override   `yaml:"override,omitempty"`
-	Level    CheckLevel `yaml:"level,omitempty"`
-
-	// Common check settings
-	Period    OptionalDuration `yaml:"period,omitempty"`
-	Timeout   OptionalDuration `yaml:"timeout,omitempty"`
-	Threshold int              `yaml:"threshold,omitempty"`
-
-	// Type-specific check settings (only one of these can be set)
-	HTTP *HTTPCheck `yaml:"http,omitempty"`
-	TCP  *TCPCheck  `yaml:"tcp,omitempty"`
-	Exec *ExecCheck `yaml:"exec,omitempty"`
+	// IsNonEmpty returns True if the unmarshal of YAML data was resulted in
+	// the content of the part getting updated, otherwise it returns False.
+	// This is used at runtime to introspect a layer and determine which parts
+	// actually contains any entries, so we can produce a finer grained
+	// notification system.
+	IsNonEmpty() bool
 }
 
-// Copy returns a deep copy of the check configuration.
-func (c *Check) Copy() *Check {
-	copied := *c
-	if c.HTTP != nil {
-		copied.HTTP = c.HTTP.Copy()
-	}
-	if c.TCP != nil {
-		copied.TCP = c.TCP.Copy()
-	}
-	if c.Exec != nil {
-		copied.Exec = c.Exec.Copy()
-	}
-	return &copied
+type Layer struct {
+	Order       int    `yaml:"-"`
+	Label       string `yaml:"-"`
+	Summary     string `yaml:"summary,omitempty"`
+	Description string `yaml:"description,omitempty"`
+
+	Parts      map[PartName]Part `yaml:,inline`
+	PartsOrder []PartName        `yaml:"-"`
 }
 
-// Merge merges the fields set in other into c.
-func (c *Check) Merge(other *Check) {
-	if other.Level != "" {
-		c.Level = other.Level
+// UnmarshalYAML deals with the fact that the Parts map is already created before
+// we start the unmarshal. This allows us to know the Parts in advance, which
+// can now help us unmarshal the custom plan.
+func (l *Layer) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("expected a mapping node, got %v", value.Kind)
 	}
-	if other.Period.IsSet {
-		c.Period = other.Period
-	}
-	if other.Timeout.IsSet {
-		c.Timeout = other.Timeout
-	}
-	if other.Threshold != 0 {
-		c.Threshold = other.Threshold
-	}
-	if other.HTTP != nil {
-		if c.HTTP == nil {
-			c.HTTP = &HTTPCheck{}
-		}
-		c.HTTP.Merge(other.HTTP)
-	}
-	if other.TCP != nil {
-		if c.TCP == nil {
-			c.TCP = &TCPCheck{}
-		}
-		c.TCP.Merge(other.TCP)
-	}
-	if other.Exec != nil {
-		if c.Exec == nil {
-			c.Exec = &ExecCheck{}
-		}
-		c.Exec.Merge(other.Exec)
-	}
-}
 
-// CheckLevel specifies the optional check level.
-type CheckLevel string
+	for i := 0; i < len(value.Content)-1; i += 2 {
+		keyNode := value.Content[i]
+		valNode := value.Content[i+1]
 
-const (
-	UnsetLevel CheckLevel = ""
-	AliveLevel CheckLevel = "alive"
-	ReadyLevel CheckLevel = "ready"
-)
-
-// HTTPCheck holds the configuration for an HTTP health check.
-type HTTPCheck struct {
-	URL     string            `yaml:"url,omitempty"`
-	Headers map[string]string `yaml:"headers,omitempty"`
-}
-
-// Copy returns a deep copy of the HTTP check configuration.
-func (c *HTTPCheck) Copy() *HTTPCheck {
-	copied := *c
-	if c.Headers != nil {
-		copied.Headers = make(map[string]string, len(c.Headers))
-		for k, v := range c.Headers {
-			copied.Headers[k] = v
+		switch keyNode.Value {
+		case "summary":
+			l.Summary = valNode.Value
+		case "description":
+			l.Description = valNode.Value
+		default:
+			found := false
+			for key, _ := range l.Parts {
+				if string(key) == keyNode.Value {
+					found = true
+					err := valNode.Decode(l.Parts[key])
+					if err != nil {
+						return fmt.Errorf(
+							"cannot parse plan part %q: %w",
+							keyNode.Value,
+							err,
+						)
+					}
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("cannot find plan part %q", keyNode.Value)
+			}
 		}
 	}
-	return &copied
+
+	return nil
 }
 
-// Merge merges the fields set in other into c.
-func (c *HTTPCheck) Merge(other *HTTPCheck) {
-	if other.URL != "" {
-		c.URL = other.URL
+// MarshalYAML presents a layer in YAML
+func (l *Layer) MarshalYAML() (interface{}, error) {
+	result := make(map[string]interface{})
+	for key, part := range l.Parts {
+		result[string(key)] = part
 	}
-	for k, v := range other.Headers {
-		if c.Headers == nil {
-			c.Headers = make(map[string]string)
-		}
-		c.Headers[k] = v
+	return result, nil
+}
+
+// Part returns a part from a specific layer. This is a helper method
+// to allow parts to validate a plan by looking at other parts. This
+// should only be used in the context of the combined part layer.
+func (l *Layer) Part(name PartName) (part Part, err error) {
+	if part, ok := l.Parts[name]; ok {
+		return part, nil
 	}
+	return nil, fmt.Errorf("cannot find part %q in layer", name)
 }
 
-// TCPCheck holds the configuration for an HTTP health check.
-type TCPCheck struct {
-	Port int    `yaml:"port,omitempty"`
-	Host string `yaml:"host,omitempty"`
-}
-
-// Copy returns a deep copy of the TCP check configuration.
-func (c *TCPCheck) Copy() *TCPCheck {
-	copied := *c
-	return &copied
-}
-
-// Merge merges the fields set in other into c.
-func (c *TCPCheck) Merge(other *TCPCheck) {
-	if other.Port != 0 {
-		c.Port = other.Port
-	}
-	if other.Host != "" {
-		c.Host = other.Host
-	}
-}
-
-// ExecCheck holds the configuration for an exec health check.
-type ExecCheck struct {
-	Command        string            `yaml:"command,omitempty"`
-	ServiceContext string            `yaml:"service-context,omitempty"`
-	Environment    map[string]string `yaml:"environment,omitempty"`
-	UserID         *int              `yaml:"user-id,omitempty"`
-	User           string            `yaml:"user,omitempty"`
-	GroupID        *int              `yaml:"group-id,omitempty"`
-	Group          string            `yaml:"group,omitempty"`
-	WorkingDir     string            `yaml:"working-dir,omitempty"`
-}
-
-// Copy returns a deep copy of the exec check configuration.
-func (c *ExecCheck) Copy() *ExecCheck {
-	copied := *c
-	if c.Environment != nil {
-		copied.Environment = make(map[string]string, len(c.Environment))
-		for k, v := range c.Environment {
-			copied.Environment[k] = v
+// NonEmptyParts provides an ordered list of parts which actually contains
+// information following an unmarshal attempt to load a layer.
+func (l *Layer) NonEmptyParts() []PartName {
+	var updated []PartName
+	for _, name := range l.PartsOrder {
+		if l.Parts[name].IsNonEmpty() {
+			updated = append(updated, name)
 		}
 	}
-	if c.UserID != nil {
-		copied.UserID = copyIntPtr(c.UserID)
-	}
-	if c.GroupID != nil {
-		copied.GroupID = copyIntPtr(c.GroupID)
-	}
-	return &copied
+	return updated
 }
 
-// Merge merges the fields set in other into c.
-func (c *ExecCheck) Merge(other *ExecCheck) {
-	if other.Command != "" {
-		c.Command = other.Command
+type Plan struct {
+	baseDir          string
+	orderedPartTypes []PartType
+
+	Layers   []*Layer
+	Combined *Layer
+}
+
+func NewPlan(baseDir string) *Plan {
+	return &Plan{
+		baseDir: baseDir,
 	}
-	if other.ServiceContext != "" {
-		c.ServiceContext = other.ServiceContext
-	}
-	for k, v := range other.Environment {
-		if c.Environment == nil {
-			c.Environment = make(map[string]string)
+}
+
+// AddPartType adds a new part schema to the global plan. It returns an
+// error if the part dependencies (other parts) are not already added.
+//
+// The design here assumes a static global plan part add order. In other
+// words, a part x in Pebble that depends on part y for validation, must
+// be added after the dependency was added.
+func (p *Plan) AddPartType(partType PartType) error {
+	// Perform add order validation. An error produced here
+	// means the order in which parts are added at program
+	// startup is wrong.
+	for _, want := range partType.Wants() {
+		found := false
+		for _, pType := range p.orderedPartTypes {
+			if want == pType.Key() {
+				found = true
+				break
+			}
 		}
-		c.Environment[k] = v
-	}
-	if other.UserID != nil {
-		c.UserID = copyIntPtr(other.UserID)
-	}
-	if other.User != "" {
-		c.User = other.User
-	}
-	if other.GroupID != nil {
-		c.GroupID = copyIntPtr(other.GroupID)
-	}
-	if other.Group != "" {
-		c.Group = other.Group
-	}
-	if other.WorkingDir != "" {
-		c.WorkingDir = other.WorkingDir
-	}
-}
-
-// LogTarget specifies a remote server to forward logs to.
-type LogTarget struct {
-	Name     string            `yaml:"-"`
-	Type     LogTargetType     `yaml:"type"`
-	Location string            `yaml:"location"`
-	Services []string          `yaml:"services"`
-	Override Override          `yaml:"override,omitempty"`
-	Labels   map[string]string `yaml:"labels,omitempty"`
-}
-
-// LogTargetType defines the protocol to use to forward logs.
-type LogTargetType string
-
-const (
-	LokiTarget     LogTargetType = "loki"
-	SyslogTarget   LogTargetType = "syslog"
-	UnsetLogTarget LogTargetType = ""
-)
-
-// Copy returns a deep copy of the log target configuration.
-func (t *LogTarget) Copy() *LogTarget {
-	copied := *t
-	copied.Services = append([]string(nil), t.Services...)
-	if t.Labels != nil {
-		copied.Labels = make(map[string]string)
-		for k, v := range t.Labels {
-			copied.Labels[k] = v
+		if !found {
+			return fmt.Errorf(
+				"cannot find plan part dependency %q",
+				want,
+			)
 		}
 	}
-	return &copied
+
+	p.orderedPartTypes = append(p.orderedPartTypes, partType)
+	return nil
 }
 
-// Merge merges the fields set in other into t.
-func (t *LogTarget) Merge(other *LogTarget) {
-	if other.Type != "" {
-		t.Type = other.Type
+// newLayer create a new layer consisting of all the added parts which form
+// part of the plan at runtime. Note that parts are ordered to ensure part
+// validation (which may require details from other parts) always work.
+func (p *Plan) newLayer() *Layer {
+	layer := &Layer{
+		Parts: make(map[PartName]Part),
 	}
-	if other.Location != "" {
-		t.Location = other.Location
+	for _, ptype := range p.orderedPartTypes {
+		key := ptype.Key()
+		layer.PartsOrder = append(layer.PartsOrder, key)
+		layer.Parts[key] = ptype.New()
 	}
-	t.Services = append(t.Services, other.Services...)
-	for k, v := range other.Labels {
-		if t.Labels == nil {
-			t.Labels = make(map[string]string)
+	return layer
+}
+
+// Load reads the configuration layers from the "layers" sub-directory in
+// baseDir, and updates the plan, dropping any previous ephermeral layers. If
+// the "layers" sub-directory doesn't exist, a valid empty Plan exist. Any
+// part that updated on load will be in the returned changed list.
+func (p *Plan) Load() (changed []PartName, err error) {
+	layersDir := filepath.Join(p.baseDir, "layers")
+	_, err = os.Stat(layersDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
 		}
-		t.Labels[k] = v
+		return nil, err
 	}
-}
 
-// FormatError is the error returned when a layer has a format error, such as
-// a missing "override" field.
-type FormatError struct {
-	Message string
-}
-
-func (e *FormatError) Error() string {
-	return e.Message
-}
-
-// CombineLayers combines the given layers into a single layer, with the later
-// layers overriding earlier ones.
-func CombineLayers(layers ...*Layer) (*Layer, error) {
-	combined := &Layer{
-		Services:   make(map[string]*Service),
-		Checks:     make(map[string]*Check),
-		LogTargets: make(map[string]*LogTarget),
+	layers, err := p.readLayersDir(layersDir)
+	if err != nil {
+		return nil, err
 	}
+	combined, err := p.combineLayers(layers...)
+	if err != nil {
+		return nil, err
+	}
+	err = p.validate(combined)
+	if err != nil {
+		return nil, err
+	}
+
+	p.Layers = layers
+	p.Combined = combined
+
+	// Which layer parts actually contains data?
+	updatedParts := combined.NonEmptyParts()
+
+	return updatedParts, nil
+}
+
+func (p *Plan) ParseLayer(order int, label string, data []byte) (*Layer, error) {
+	layer := p.newLayer()
+	dec := yaml.NewDecoder(bytes.NewBuffer(data))
+	dec.KnownFields(true)
+	err := dec.Decode(layer)
+	if err != nil {
+		return nil, &FormatError{
+			Message: fmt.Sprintf("cannot parse layer %q: %v", label, err),
+		}
+	}
+
+	// Validate each part in order
+	for _, key := range layer.PartsOrder {
+		part := layer.Parts[key]
+		err = part.ValidatePart()
+		if err != nil {
+			return nil, fmt.Errorf("cannot validate part %v: %w", key, err)
+		}
+	}
+
+	layer.Order = order
+	layer.Label = label
+	return layer, nil
+}
+
+// combineLayers combine the given layers in turn (in the supplied order)
+// into one layer. Each layer part merge will consults its local override
+// attributes to either replace or merge an individual part entry.
+func (p *Plan) combineLayers(layers ...*Layer) (*Layer, error) {
+	combined := p.newLayer()
 	if len(layers) == 0 {
 		return combined, nil
 	}
 	last := layers[len(layers)-1]
 	combined.Summary = last.Summary
 	combined.Description = last.Description
+
+	// Combine all the layers into one
 	for _, layer := range layers {
-		for name, service := range layer.Services {
-			switch service.Override {
-			case MergeOverride:
-				if old, ok := combined.Services[name]; ok {
-					copied := old.Copy()
-					copied.Merge(service)
-					combined.Services[name] = copied
-					break
-				}
-				fallthrough
-			case ReplaceOverride:
-				combined.Services[name] = service.Copy()
-			case UnknownOverride:
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`layer %q must define "override" for service %q`,
-						layer.Label, service.Name),
-				}
-			default:
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`layer %q has invalid "override" value for service %q`,
-						layer.Label, service.Name),
-				}
-			}
-		}
-
-		for name, check := range layer.Checks {
-			switch check.Override {
-			case MergeOverride:
-				if old, ok := combined.Checks[name]; ok {
-					copied := old.Copy()
-					copied.Merge(check)
-					combined.Checks[name] = copied
-					break
-				}
-				fallthrough
-			case ReplaceOverride:
-				combined.Checks[name] = check.Copy()
-			case UnknownOverride:
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`layer %q must define "override" for check %q`,
-						layer.Label, check.Name),
-				}
-			default:
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`layer %q has invalid "override" value for check %q`,
-						layer.Label, check.Name),
-				}
-			}
-		}
-
-		for name, target := range layer.LogTargets {
-			switch target.Override {
-			case MergeOverride:
-				if old, ok := combined.LogTargets[name]; ok {
-					copied := old.Copy()
-					copied.Merge(target)
-					combined.LogTargets[name] = copied
-					break
-				}
-				fallthrough
-			case ReplaceOverride:
-				combined.LogTargets[name] = target.Copy()
-			case UnknownOverride:
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`layer %q must define "override" for log target %q`,
-						layer.Label, target.Name),
-				}
-			default:
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`layer %q has invalid "override" value for log target %q`,
-						layer.Label, target.Name),
-				}
-			}
-		}
-	}
-
-	// Ensure fields in combined layers validate correctly (and set defaults).
-	for name, service := range combined.Services {
-		if service.Command == "" {
-			return nil, &FormatError{
-				Message: fmt.Sprintf(`plan must define "command" for service %q`, name),
-			}
-		}
-		_, _, err := service.ParseCommand()
-		if err != nil {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("plan service %q command invalid: %v", name, err),
-			}
-		}
-		if !validServiceAction(service.OnSuccess, ActionFailureShutdown) {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("plan service %q on-success action %q invalid", name, service.OnSuccess),
-			}
-		}
-		if !validServiceAction(service.OnFailure, ActionSuccessShutdown) {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("plan service %q on-failure action %q invalid", name, service.OnFailure),
-			}
-		}
-		for _, action := range service.OnCheckFailure {
-			if !validServiceAction(action, ActionSuccessShutdown) {
-				return nil, &FormatError{
-					Message: fmt.Sprintf("plan service %q on-check-failure action %q invalid", name, action),
-				}
-			}
-		}
-		if !service.BackoffDelay.IsSet {
-			service.BackoffDelay.Value = defaultBackoffDelay
-		}
-		if !service.BackoffFactor.IsSet {
-			service.BackoffFactor.Value = defaultBackoffFactor
-		} else if service.BackoffFactor.Value < 1 {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("plan service %q backoff-factor must be 1.0 or greater, not %g", name, service.BackoffFactor.Value),
-			}
-		}
-		if !service.BackoffLimit.IsSet {
-			service.BackoffLimit.Value = defaultBackoffLimit
-		}
-
-	}
-
-	for name, check := range combined.Checks {
-		if check.Level != UnsetLevel && check.Level != AliveLevel && check.Level != ReadyLevel {
-			return nil, &FormatError{
-				Message: fmt.Sprintf(`plan check %q level must be "alive" or "ready"`, name),
-			}
-		}
-		if !check.Period.IsSet {
-			check.Period.Value = defaultCheckPeriod
-		} else if check.Period.Value == 0 {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("plan check %q period must not be zero", name),
-			}
-		}
-		if !check.Timeout.IsSet {
-			check.Timeout.Value = defaultCheckTimeout
-		} else if check.Timeout.Value == 0 {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("plan check %q timeout must not be zero", name),
-			}
-		} else if check.Timeout.Value >= check.Period.Value {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("plan check %q timeout must be less than period", name),
-			}
-		}
-		if check.Threshold == 0 {
-			// Default number of failures in a row before check triggers
-			// action, default is >1 to avoid flapping due to glitches. For
-			// what it's worth, Kubernetes probes uses a default of 3 too.
-			check.Threshold = defaultCheckThreshold
-		}
-
-		numTypes := 0
-		if check.HTTP != nil {
-			if check.HTTP.URL == "" {
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`plan must set "url" for http check %q`, name),
-				}
-			}
-			numTypes++
-		}
-		if check.TCP != nil {
-			if check.TCP.Port == 0 {
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`plan must set "port" for tcp check %q`, name),
-				}
-			}
-			numTypes++
-		}
-		if check.Exec != nil {
-			if check.Exec.Command == "" {
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`plan must set "command" for exec check %q`, name),
-				}
-			}
-			_, err := shlex.Split(check.Exec.Command)
+		for _, partName := range combined.PartsOrder {
+			err := combined.Parts[partName].Combine(layer.Parts[partName])
 			if err != nil {
-				return nil, &FormatError{
-					Message: fmt.Sprintf("plan check %q command invalid: %v", name, err),
-				}
-			}
-			_, contextExists := combined.Services[check.Exec.ServiceContext]
-			if check.Exec.ServiceContext != "" && !contextExists {
-				return nil, &FormatError{
-					Message: fmt.Sprintf("plan check %q service context specifies non-existent service %q",
-						name, check.Exec.ServiceContext),
-				}
-			}
-			_, _, err = osutil.NormalizeUidGid(check.Exec.UserID, check.Exec.GroupID, check.Exec.User, check.Exec.Group)
-			if err != nil {
-				return nil, &FormatError{
-					Message: fmt.Sprintf("plan check %q has invalid user/group: %v", name, err),
-				}
-			}
-			numTypes++
-		}
-		if numTypes != 1 {
-			return nil, &FormatError{
-				Message: fmt.Sprintf(`plan must specify one of "http", "tcp", or "exec" for check %q`, name),
+				return nil, fmt.Errorf(
+					"cannot combine plan part %q from layer %q: %w",
+					partName,
+					layer.Label,
+					err,
+				)
 			}
 		}
 	}
-
-	for name, target := range combined.LogTargets {
-		switch target.Type {
-		case LokiTarget, SyslogTarget:
-			// valid, continue
-		case UnsetLogTarget:
-			return nil, &FormatError{
-				Message: fmt.Sprintf(`plan must define "type" (%q or %q) for log target %q`,
-					LokiTarget, SyslogTarget, name),
-			}
-		default:
-			return nil, &FormatError{
-				Message: fmt.Sprintf(`log target %q has unsupported type %q, must be %q or %q`,
-					name, target.Type, LokiTarget, SyslogTarget),
-			}
-		}
-
-		// Validate service names specified in log target
-		for _, serviceName := range target.Services {
-			serviceName = strings.TrimPrefix(serviceName, "-")
-			if serviceName == "all" {
-				continue
-			}
-			if _, ok := combined.Services[serviceName]; ok {
-				continue
-			}
-			return nil, &FormatError{
-				Message: fmt.Sprintf(`log target %q specifies unknown service %q`,
-					target.Name, serviceName),
-			}
-		}
-
-		if target.Location == "" {
-			return nil, &FormatError{
-				Message: fmt.Sprintf(`plan must define "location" for log target %q`, name),
-			}
-		}
-	}
-
-	// Ensure combined layers don't have cycles.
-	err := combined.checkCycles()
-	if err != nil {
-		return nil, err
-	}
-
 	return combined, nil
 }
 
-// StartOrder returns the required services that must be started for the named
-// services to be properly started, in the order that they must be started.
-// An error is returned when a provided service name does not exist, or there
-// is an order cycle involving the provided service or its dependencies.
-func (p *Plan) StartOrder(names []string) ([]string, error) {
-	return order(p.Services, names, false)
-}
-
-// StopOrder returns the required services that must be stopped for the named
-// services to be properly stopped, in the order that they must be stopped.
-// An error is returned when a provided service name does not exist, or there
-// is an order cycle involving the provided service or its dependencies.
-func (p *Plan) StopOrder(names []string) ([]string, error) {
-	return order(p.Services, names, true)
-}
-
-func order(services map[string]*Service, names []string, stop bool) ([]string, error) {
-	// For stop, create a list of reversed dependencies.
-	predecessors := map[string][]string(nil)
-	if stop {
-		predecessors = make(map[string][]string)
-		for name, service := range services {
-			for _, req := range service.Requires {
-				predecessors[req] = append(predecessors[req], name)
-			}
+// Validate performs plan validation of the supplied combined layer. This
+// layer must be a flattened representation of the entire plan. This method
+// cannot be used on a separate layer as the layer on its own may not include
+// the required plan dependencies needed for plan validation.
+func (p *Plan) validate(combined *Layer) error {
+	for _, partName := range combined.PartsOrder {
+		err := combined.Parts[partName].ValidatePlan(combined)
+		if err != nil {
+			return fmt.Errorf(
+				"cannot validate plan part %q: %w",
+				partName,
+				err,
+			)
 		}
 	}
-
-	// Collect all services that will be started or stopped.
-	successors := map[string][]string{}
-	pending := append([]string(nil), names...)
-	for i := 0; i < len(pending); i++ {
-		name := pending[i]
-		if _, seen := successors[name]; seen {
-			continue
-		}
-		successors[name] = nil
-		if stop {
-			pending = append(pending, predecessors[name]...)
-		} else {
-			service, ok := services[name]
-			if !ok {
-				return nil, &FormatError{
-					Message: fmt.Sprintf("service %q does not exist", name),
-				}
-			}
-			pending = append(pending, service.Requires...)
-		}
-	}
-
-	// Create a list of successors involving those services only.
-	for name := range successors {
-		service, ok := services[name]
-		if !ok {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("service %q does not exist", name),
-			}
-		}
-		succs := successors[name]
-		serviceAfter := service.After
-		serviceBefore := service.Before
-		if stop {
-			serviceAfter, serviceBefore = serviceBefore, serviceAfter
-		}
-		for _, after := range serviceAfter {
-			if _, required := successors[after]; required {
-				succs = append(succs, after)
-			}
-		}
-		successors[name] = succs
-		for _, before := range serviceBefore {
-			if succs, required := successors[before]; required {
-				successors[before] = append(succs, name)
-			}
-		}
-	}
-
-	// Sort them up.
-	var order []string
-	for _, names := range tarjanSort(successors) {
-		if len(names) > 1 {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("services in before/after loop: %s", strings.Join(names, ", ")),
-			}
-		}
-		order = append(order, names[0])
-	}
-	return order, nil
-}
-
-func (l *Layer) checkCycles() error {
-	var names []string
-	for name := range l.Services {
-		names = append(names, name)
-	}
-	_, err := order(l.Services, names, false)
-	return err
-}
-
-func ParseLayer(order int, label string, data []byte) (*Layer, error) {
-	layer := Layer{
-		Services:   map[string]*Service{},
-		Checks:     map[string]*Check{},
-		LogTargets: map[string]*LogTarget{},
-	}
-	dec := yaml.NewDecoder(bytes.NewBuffer(data))
-	dec.KnownFields(true)
-	err := dec.Decode(&layer)
-	if err != nil {
-		return nil, &FormatError{
-			Message: fmt.Sprintf("cannot parse layer %q: %v", label, err),
-		}
-	}
-	layer.Order = order
-	layer.Label = label
-
-	for name, service := range layer.Services {
-		if name == "" {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("cannot use empty string as service name"),
-			}
-		}
-		if name == "pebble" {
-			// Disallow service name "pebble" to avoid ambiguity (for example,
-			// in log output).
-			return nil, &FormatError{
-				Message: fmt.Sprintf("cannot use reserved service name %q", name),
-			}
-		}
-		// Deprecated service names
-		if name == "all" || name == "default" || name == "none" {
-			logger.Noticef("Using keyword %q as a service name is deprecated", name)
-		}
-		if strings.HasPrefix(name, "-") {
-			return nil, &FormatError{
-				Message: fmt.Sprintf(`cannot use service name %q: starting with "-" not allowed`, name),
-			}
-		}
-		if service == nil {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("service object cannot be null for service %q", name),
-			}
-		}
-		service.Name = name
-	}
-
-	for name, check := range layer.Checks {
-		if name == "" {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("cannot use empty string as check name"),
-			}
-		}
-		if check == nil {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("check object cannot be null for check %q", name),
-			}
-		}
-		check.Name = name
-	}
-
-	for name, target := range layer.LogTargets {
-		if name == "" {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("cannot use empty string as log target name"),
-			}
-		}
-		if target == nil {
-			return nil, &FormatError{
-				Message: fmt.Sprintf("log target object cannot be null for log target %q", name),
-			}
-		}
-		for labelName := range target.Labels {
-			// 'pebble_*' labels are reserved
-			if strings.HasPrefix(labelName, "pebble_") {
-				return nil, &FormatError{
-					Message: fmt.Sprintf(`log target %q: label %q uses reserved prefix "pebble_"`, name, labelName),
-				}
-			}
-		}
-		target.Name = name
-	}
-
-	err = layer.checkCycles()
-	if err != nil {
-		return nil, err
-	}
-	return &layer, err
-}
-
-func validServiceAction(action ServiceAction, additionalValid ...ServiceAction) bool {
-	for _, v := range additionalValid {
-		if action == v {
-			return true
-		}
-	}
-	switch action {
-	case ActionUnset, ActionRestart, ActionShutdown, ActionIgnore:
-		return true
-	default:
-		return false
-	}
+	return nil
 }
 
 var fnameExp = regexp.MustCompile("^([0-9]{3})-([a-z](?:-?[a-z0-9]){2,}).yaml$")
 
-func ReadLayersDir(dirname string) ([]*Layer, error) {
+func (p *Plan) readLayersDir(dirname string) ([]*Layer, error) {
 	finfos, err := ioutil.ReadDir(dirname)
 	if err != nil {
 		// Errors from package os generally include the path.
-		return nil, fmt.Errorf("cannot read layers directory: %v", err)
+		return nil, fmt.Errorf("cannot read layers directory: %w", err)
 	}
 
 	orders := make(map[int]string)
@@ -1049,12 +392,12 @@ func ReadLayersDir(dirname string) ([]*Layer, error) {
 		data, err := ioutil.ReadFile(filepath.Join(dirname, finfo.Name()))
 		if err != nil {
 			// Errors from package os generally include the path.
-			return nil, fmt.Errorf("cannot read layer file: %v", err)
+			return nil, fmt.Errorf("cannot read layer file: %w", err)
 		}
 		label := match[2]
 		order, err := strconv.Atoi(match[1])
 		if err != nil {
-			panic(fmt.Sprintf("internal error: filename regexp is wrong: %v", err))
+			return nil, fmt.Errorf("internal error: filename regexp is wrong: %w", err)
 		}
 
 		oldLabel, dupOrder := orders[order]
@@ -1071,7 +414,7 @@ func ReadLayersDir(dirname string) ([]*Layer, error) {
 		orders[order] = label
 		labels[label] = order
 
-		layer, err := ParseLayer(order, label, data)
+		layer, err := p.ParseLayer(order, label, data)
 		if err != nil {
 			return nil, err
 		}
@@ -1080,108 +423,124 @@ func ReadLayersDir(dirname string) ([]*Layer, error) {
 	return layers, nil
 }
 
-// ReadDir reads the configuration layers from the "layers" sub-directory in
-// dir, and returns the resulting Plan. If the "layers" sub-directory doesn't
-// exist, it returns a valid Plan with no layers.
-func ReadDir(dir string) (*Plan, error) {
-	layersDir := filepath.Join(dir, "layers")
-	_, err := os.Stat(layersDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &Plan{}, nil
-		}
-		return nil, err
-	}
-
-	layers, err := ReadLayersDir(layersDir)
-	if err != nil {
-		return nil, err
-	}
-	combined, err := CombineLayers(layers...)
-	if err != nil {
-		return nil, err
-	}
-	plan := &Plan{
-		Layers:     layers,
-		Services:   combined.Services,
-		Checks:     combined.Checks,
-		LogTargets: combined.LogTargets,
-	}
-	return plan, err
-}
-
-// MergeServiceContext merges the overrides on top of the service context
-// specified by serviceName, returning a new ContextOptions value. If
-// serviceName is "" (context not specified), return overrides directly.
-func MergeServiceContext(p *Plan, serviceName string, overrides ContextOptions) (ContextOptions, error) {
-	if serviceName == "" {
-		return overrides, nil
-	}
-	var service *Service
-	for _, s := range p.Services {
-		if s.Name == serviceName {
-			service = s
-			break
+// findLayer returns the index (in layers) of the layer with the given label,
+// or returns -1, nil if there's no layer with that label.
+func (p *Plan) findLayer(label string) (int, *Layer) {
+	for i, layer := range p.Layers {
+		if layer.Label == label {
+			return i, layer
 		}
 	}
-	if service == nil {
-		return ContextOptions{}, fmt.Errorf("context service %q not found", serviceName)
-	}
-
-	// Start with the config values from the context service.
-	merged := ContextOptions{
-		Environment: make(map[string]string),
-	}
-	for k, v := range service.Environment {
-		merged.Environment[k] = v
-	}
-	if service.UserID != nil {
-		merged.UserID = copyIntPtr(service.UserID)
-	}
-	merged.User = service.User
-	if service.GroupID != nil {
-		merged.GroupID = copyIntPtr(service.GroupID)
-	}
-	merged.Group = service.Group
-	merged.WorkingDir = service.WorkingDir
-
-	// Merge in fields from the overrides, if set.
-	for k, v := range overrides.Environment {
-		merged.Environment[k] = v
-	}
-	if overrides.UserID != nil {
-		merged.UserID = copyIntPtr(overrides.UserID)
-	}
-	if overrides.User != "" {
-		merged.User = overrides.User
-	}
-	if overrides.GroupID != nil {
-		merged.GroupID = copyIntPtr(overrides.GroupID)
-	}
-	if overrides.Group != "" {
-		merged.Group = overrides.Group
-	}
-	if overrides.WorkingDir != "" {
-		merged.WorkingDir = overrides.WorkingDir
-	}
-
-	return merged, nil
+	return -1, nil
 }
 
-// ContextOptions holds service context config fields.
-type ContextOptions struct {
-	Environment map[string]string
-	UserID      *int
-	User        string
-	GroupID     *int
-	Group       string
-	WorkingDir  string
+// LayerExists provides a way to determine if an AppendLayer or UpdateLayer
+// operation is suitable. Updating a layer may only be performed if a layer
+// with a matching label already exist. If the layer does not exist, the
+// requester may decide to perform a layer AppendLayer instead.
+func (p *Plan) LayerExists(label string) bool {
+	_, layer := p.findLayer(label)
+	return layer != nil
 }
 
-func copyIntPtr(p *int) *int {
-	if p == nil {
-		return nil
+// AppendLayer appends the given layer to the plan's layers and updates the
+// layer.Order field to the new order. If a layer with layer.Label already
+// exists, return an error of type *LabelExists.
+func (p *Plan) AppendLayer(layer *Layer) (changed []PartName, err error) {
+	index, _ := p.findLayer(layer.Label)
+	if index >= 0 {
+		return nil, &LabelExists{Label: layer.Label}
 	}
-	copied := *p
-	return &copied
+
+	// Which layer parts actually contains data?
+	updatedParts := layer.NonEmptyParts()
+
+	// The provided append layer order number is ignored since the append
+	// operation implies a new order, determined by the number of present
+	// layers.
+	newOrder := 1
+	if len(p.Layers) > 0 {
+		last := p.Layers[len(p.Layers)-1]
+		newOrder = last.Order + 1
+	}
+
+	newLayers := append(p.Layers, layer)
+	combined, err := p.combineLayers(newLayers...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate the combined plan
+	err = p.validate(combined)
+	if err != nil {
+		return nil, err
+	}
+
+	// Publish the new plan
+	p.Layers = newLayers
+	p.Combined = combined
+
+	// The layer provided must reflect the newly allocated order number
+	// after the plan was updated (as per the original requirements).
+	layer.Order = newOrder
+	return updatedParts, nil
+}
+
+// UpdateLayer combines the given layer with an existing layer that has the
+// same label. If no existing layer has the label, return the error of type
+// *LabelMissing. Update the layer.Order field to the new order.
+func (p *Plan) UpdateLayer(layer *Layer) (changed []PartName, err error) {
+	index, found := p.findLayer(layer.Label)
+	if index < 0 {
+		return nil, &LabelMissing{Label: layer.Label}
+	}
+
+	// Which layer parts actually contains data?
+	updatedParts := layer.NonEmptyParts()
+
+	// Layer found with this label, combine into that one.
+	updated, err := p.combineLayers(found, layer)
+	if err != nil {
+		return nil, err
+	}
+	updated.Order = found.Order
+	updated.Label = found.Label
+
+	// Insert combined layer back into plan's layers list.
+	newLayers := make([]*Layer, len(p.Layers))
+	copy(newLayers, p.Layers)
+	newLayers[index] = updated
+
+	combined, err := p.combineLayers(newLayers...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate the combined plan
+	err = p.validate(combined)
+	if err != nil {
+		return nil, err
+	}
+
+	// Publish the new plan
+	p.Layers = newLayers
+	p.Combined = combined
+
+	// The layer provided must reflect the newly allocated order number
+	// after the plan was updated (as per the original requirements).
+	layer.Order = found.Order
+	return updatedParts, nil
+}
+
+// Part returns the combined plan view relating to a specific part.
+func (p *Plan) Part(name PartName) (part Part, err error) {
+	if part, ok := p.Combined.Parts[name]; ok {
+		return part, nil
+	}
+	return nil, fmt.Errorf("cannot find part %q in plan", name)
+}
+
+// Plan returns the combined plan view
+func (p *Plan) Plan() (combined *Layer) {
+	return p.Combined
 }
