@@ -32,6 +32,37 @@ import (
 	"github.com/canonical/pebble/internals/osutil"
 )
 
+// LayerSectionExtension allows the plan layer schema to evolve without
+// adding centralised schema knowledge to the plan library.
+type LayerSectionExtension interface {
+
+	// NewSection creates a new (empty) layer section consisting of a concrete
+	// section type.
+	NewSection() LayerSection
+
+	// ParseSection creates a new layer section containing the unmarshalled
+	// yaml.Node, and any additional section specific implementation changes
+	// it wishes to apply to the backing type.
+	ParseSection(data *yaml.Node) (LayerSection, error)
+
+	// CombineSections creates a new layer section containing the result of
+	// combining the layer sections in the supplied order.
+	CombineSections(sections ...LayerSection) (LayerSection, error)
+
+	// ValidatePlan takes the plan as input, and asks a specific section
+	// implementation to validate itself against the plan. This allows a
+	// section with references to other sections to ensure plan consistency.
+	ValidatePlan(plan *Plan) error
+}
+
+type LayerSection interface {
+	// Validate expects the section to validate itself.
+	Validate() error
+
+	// IsEmpty returns true if the section empty.
+	IsEmpty() bool
+}
+
 const (
 	defaultBackoffDelay  = 500 * time.Millisecond
 	defaultBackoffFactor = 2.0
@@ -42,11 +73,20 @@ const (
 	defaultCheckThreshold = 3
 )
 
+// layerExtensions keeps a map of registered extensions.
+var layerExtensions = map[string]LayerSectionExtension{}
+
+func RegisterExtension(field string, ext LayerSectionExtension) error {
+	if _, ok := layerExtensions[field]; ok {
+		return fmt.Errorf("internal error: extension %q already registered", key)
+	}
+	layerExtensions[field] = ext
+	return nil
+}
+
 type Plan struct {
-	Layers     []*Layer              `yaml:"-"`
-	Services   map[string]*Service   `yaml:"services,omitempty"`
-	Checks     map[string]*Check     `yaml:"checks,omitempty"`
-	LogTargets map[string]*LogTarget `yaml:"log-targets,omitempty"`
+	Layers   []*Layer
+	Combined *Layer
 }
 
 type Layer struct {
@@ -57,6 +97,19 @@ type Layer struct {
 	Services    map[string]*Service   `yaml:"services,omitempty"`
 	Checks      map[string]*Check     `yaml:"checks,omitempty"`
 	LogTargets  map[string]*LogTarget `yaml:"log-targets,omitempty"`
+
+	// Plan extensions.
+	Sections map[string]LayerSection `yaml:"-"`
+}
+
+// addSection adds a new section to the layer.
+func (layer *Layer) addSection(key string, section LayerSection) {
+	layer.Sections[key] = section
+}
+
+// Section retrieves a layer section from a layer.
+func (layer *Layer) Section(key string) LayerSection {
+	return layer.Sections[key]
 }
 
 type Service struct {
@@ -549,6 +602,28 @@ func (e *FormatError) Error() string {
 	return e.Message
 }
 
+// MarshalYAML provides the ability to use yaml.Marshal on the plan. The
+// Summary and Description is not currently expected in the combined plan
+// output.
+func (plan *Plan) MarshalYAML() (interface{}, error) {
+	marshalledPlan := make(map[string]interface{})
+	if len(plan.Combined.Services) > 0 {
+		marshalledPlan["services"] = plan.Combined.Services
+	}
+	if len(plan.Combined.Checks) > 0 {
+		marshalledPlan["checks"] = plan.Combined.Checks
+	}
+	if len(plan.Combined.LogTargets) > 0 {
+		marshalledPlan["logtargets"] = plan.Combined.LogTargets
+	}
+	for key, section := range plan.Combined.Sections {
+		if !section.IsEmpty() {
+			marshalledPlan[key] = section
+		}
+	}
+	return marshalledPlan, nil
+}
+
 // CombineLayers combines the given layers into a single layer, with the later
 // layers overriding earlier ones.
 // Neither the individual layers nor the combined layer are validated here - the
@@ -559,8 +634,16 @@ func CombineLayers(layers ...*Layer) (*Layer, error) {
 		Services:   make(map[string]*Service),
 		Checks:     make(map[string]*Check),
 		LogTargets: make(map[string]*LogTarget),
+		Sections:   make(map[string]LayerSection),
 	}
 	if len(layers) == 0 {
+		// We must return a valid empty layer by convention here. Since we
+		// now know the input layers list is empty, we cannot rely on the
+		// combine code below to add the sections. Instead, lets add the empty
+		// layer sections now.
+		for key, extension := range p.layerExtensions {
+			combined.AddSection(key, extension.NewSection())
+		}
 		return combined, nil
 	}
 	last := layers[len(layers)-1]
@@ -641,6 +724,25 @@ func CombineLayers(layers ...*Layer) (*Layer, error) {
 				}
 			}
 		}
+	}
+
+	// Combine the sections
+	for key, extension := range layerExtensions {
+		var sectionFromLayers []LayerSection
+		for _, layer := range layers {
+			s := layer.Section(key)
+			if s != nil {
+				sections = append(sections, s)
+			}
+		}
+		// Even if sections is empty, the method returns a valid empty section.
+		combinedSection, err := extension.CombineSections(sections...)
+		if err != nil {
+			return nil, &FormatError{
+				Message: fmt.Sprintf(`cannot combine section %q: %v`, key, err),
+			}
+		}
+		combined.Sections[key] = combinedSection
 	}
 
 	// Set defaults where required.
@@ -819,13 +921,20 @@ func (layer *Layer) Validate() error {
 		}
 	}
 
+	for key, section := range layer.Sections {
+		err := section.Validate()
+		if err != nil {
+			return fmt.Errorf("cannot validate layer section %q: %w", key, err)
+		}
+	}
+
 	return nil
 }
 
-// Validate checks that the combined layers form a valid plan.
+// Validate checks that the combined layer forms a valid plan.
 // See also Layer.Validate, which checks that the individual layers are valid.
 func (p *Plan) Validate() error {
-	for name, service := range p.Services {
+	for name, service := range p.Combined.Services {
 		if service.Command == "" {
 			return &FormatError{
 				Message: fmt.Sprintf(`plan must define "command" for service %q`, name),
@@ -833,7 +942,7 @@ func (p *Plan) Validate() error {
 		}
 	}
 
-	for name, check := range p.Checks {
+	for name, check := range p.Combined.Checks {
 		numTypes := 0
 		if check.HTTP != nil {
 			if check.HTTP.URL == "" {
@@ -857,7 +966,7 @@ func (p *Plan) Validate() error {
 					Message: fmt.Sprintf(`plan must set "command" for exec check %q`, name),
 				}
 			}
-			_, contextExists := p.Services[check.Exec.ServiceContext]
+			_, contextExists := p.Combined.Services[check.Exec.ServiceContext]
 			if check.Exec.ServiceContext != "" && !contextExists {
 				return &FormatError{
 					Message: fmt.Sprintf("plan check %q service context specifies non-existent service %q",
@@ -873,7 +982,7 @@ func (p *Plan) Validate() error {
 		}
 	}
 
-	for name, target := range p.LogTargets {
+	for name, target := range p.Combined.LogTargets {
 		switch target.Type {
 		case LokiTarget, SyslogTarget:
 			// valid, continue
@@ -890,7 +999,7 @@ func (p *Plan) Validate() error {
 			if serviceName == "all" {
 				continue
 			}
-			if _, ok := p.Services[serviceName]; ok {
+			if _, ok := p.Combined.Services[serviceName]; ok {
 				continue
 			}
 			return &FormatError{
@@ -911,6 +1020,15 @@ func (p *Plan) Validate() error {
 	if err != nil {
 		return err
 	}
+
+	// Ask each section extension to inspect the combined plan.
+	for key, extension := range layerExtensions {
+		err = extension.ValidatePlan(p)
+		if err != nil {
+			return fmt.Errorf("cannot validate plan section %q: %w", key, err)
+		}
+	}
+
 	return nil
 }
 
@@ -919,7 +1037,7 @@ func (p *Plan) Validate() error {
 // An error is returned when a provided service name does not exist, or there
 // is an order cycle involving the provided service or its dependencies.
 func (p *Plan) StartOrder(names []string) ([]string, error) {
-	return order(p.Services, names, false)
+	return order(p.Combined.Services, names, false)
 }
 
 // StopOrder returns the required services that must be stopped for the named
@@ -927,7 +1045,7 @@ func (p *Plan) StartOrder(names []string) ([]string, error) {
 // An error is returned when a provided service name does not exist, or there
 // is an order cycle involving the provided service or its dependencies.
 func (p *Plan) StopOrder(names []string) ([]string, error) {
-	return order(p.Services, names, true)
+	return order(p.Combined.Services, names, true)
 }
 
 func order(services map[string]*Service, names []string, stop bool) ([]string, error) {
@@ -1006,27 +1124,67 @@ func order(services map[string]*Service, names []string, stop bool) ([]string, e
 
 func (p *Plan) checkCycles() error {
 	var names []string
-	for name := range p.Services {
+	for name := range p.Combined.Services {
 		names = append(names, name)
 	}
-	_, err := order(p.Services, names, false)
+	_, err := order(p.Combined.Services, names, false)
 	return err
 }
 
 func ParseLayer(order int, label string, data []byte) (*Layer, error) {
-	layer := Layer{
-		Services:   map[string]*Service{},
-		Checks:     map[string]*Check{},
-		LogTargets: map[string]*LogTarget{},
+	layer := &Layer{
+		Services:   make(map[string]*Service),
+		Checks:     make(map[string]*Check),
+		LogTargets: make(map[string]*LogTarget),
+		Sections:   make(map[string]LayerSection),
 	}
-	dec := yaml.NewDecoder(bytes.NewBuffer(data))
-	dec.KnownFields(true)
-	err := dec.Decode(&layer)
+
+	builtins := map[string]interface{}{
+		"summary":     &layer.Summary,
+		"description": &layer.Description,
+		"services":    &layer.Services,
+		"checks":      &layer.Checks,
+		"log-targets": &layer.LogTargets,
+	}
+
+	var planOutline map[string]yaml.Node
+	err = yaml.Unmarshal(data, &planOutline)
 	if err != nil {
 		return nil, &FormatError{
 			Message: fmt.Sprintf("cannot parse layer %q: %v", label, err),
 		}
 	}
+
+	for k, v := range planOutline {
+		switch k {
+		case "summary", "description", "services", "checks", "log-targets":
+			if err = v.Decode(builtins[k]); err != nil {
+				return nil, &FormatError{
+					Message: fmt.Sprintf("cannot parse layer %q section %q: %v", label, k, err),
+				}
+			}
+		default:
+			if ext, ok := layerExtensions[k]; ok {
+				section, err := ext.ParseSection(&v)
+				if err != nil {
+					return nil, &FormatError{
+						Message: fmt.Sprintf("cannot parse layer %q section %q: %v", label, k, err),
+					}
+				}
+				layer.AddSection(k, section)
+			}
+			// We ignore keys we do not understand.
+		}
+	}
+
+	// Layer sections not present in the YAML will be missing in this layer.
+	// Add empty sections for missing sections to make the layer valid.
+	for key, extension := range layerExtensions {
+		if layer.Section(key) == nil {
+			layer.addSection(key, extension.NewSection())
+		}
+	}
+
 	layer.Order = order
 	layer.Label = label
 
@@ -1054,7 +1212,7 @@ func ParseLayer(order int, label string, data []byte) (*Layer, error) {
 		return nil, err
 	}
 
-	return &layer, err
+	return layer, err
 }
 
 func validServiceAction(action ServiceAction, additionalValid ...ServiceAction) bool {
@@ -1133,31 +1291,37 @@ func ReadLayersDir(dirname string) ([]*Layer, error) {
 }
 
 // ReadDir reads the configuration layers from the "layers" sub-directory in
-// dir, and returns the resulting Plan. If the "layers" sub-directory doesn't
+// dir, and returns the resulting plan. If the "layers" sub-directory doesn't
 // exist, it returns a valid Plan with no layers.
 func ReadDir(dir string) (*Plan, error) {
 	layersDir := filepath.Join(dir, "layers")
 	_, err := os.Stat(layersDir)
+	var missingDir bool
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &Plan{}, nil
+		missingDir = os.IsNotExist(err)
+		if !missingDir {
+			return nil, err
 		}
-		return nil, err
 	}
 
-	layers, err := ReadLayersDir(layersDir)
-	if err != nil {
-		return nil, err
+	var layers []*Layer
+	if !missingDir {
+		// Only try to load the layers if the directory exist.
+		layers, err = ReadLayersDir(layersDir)
+		if err != nil {
+			return nil, err
+		}
 	}
+
+	// layers will be nil if the directory does not exist, which
+	// will result in a valid but empty combined layer.
 	combined, err := CombineLayers(layers...)
 	if err != nil {
 		return nil, err
 	}
 	plan := &Plan{
-		Layers:     layers,
-		Services:   combined.Services,
-		Checks:     combined.Checks,
-		LogTargets: combined.LogTargets,
+		Layers:   layers,
+		Combined: combined,
 	}
 	err = plan.Validate()
 	if err != nil {
@@ -1169,15 +1333,17 @@ func ReadDir(dir string) (*Plan, error) {
 // MergeServiceContext merges the overrides on top of the service context
 // specified by serviceName, returning a new ContextOptions value. If
 // serviceName is "" (context not specified), return overrides directly.
-func MergeServiceContext(p *Plan, serviceName string, overrides ContextOptions) (ContextOptions, error) {
+func MergeServiceContext(plan *Plan, serviceName string, overrides ContextOptions) (ContextOptions, error) {
 	if serviceName == "" {
 		return overrides, nil
 	}
 	var service *Service
-	for _, s := range p.Services {
-		if s.Name == serviceName {
-			service = s
-			break
+	if plan.Combined != nil {
+		for _, s := range plan.Combined.Services() {
+			if s.Name == serviceName {
+				service = s
+				break
+			}
 		}
 	}
 	if service == nil {
