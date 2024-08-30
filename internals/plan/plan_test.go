@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Canonical Ltd
+// Copyright (c) 2024 Canonical Ltd
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,13 +19,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
+	"unicode"
 
 	. "gopkg.in/check.v1"
 	"gopkg.in/yaml.v3"
 
 	"github.com/canonical/pebble/internals/plan"
+	"github.com/canonical/pebble/internals/testutil"
 )
 
 const (
@@ -203,6 +206,7 @@ var planTests = []planTest{{
 		},
 		Checks:     map[string]*plan.Check{},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	}, {
 		Order:       1,
 		Label:       "layer-1",
@@ -253,6 +257,7 @@ var planTests = []planTest{{
 		},
 		Checks:     map[string]*plan.Check{},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	}},
 	result: &plan.Layer{
 		Summary:     "Simple override layer.",
@@ -332,6 +337,7 @@ var planTests = []planTest{{
 		},
 		Checks:     map[string]*plan.Check{},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	},
 	start: map[string][]string{
 		"srv1": {"srv2", "srv1", "srv3"},
@@ -394,6 +400,7 @@ var planTests = []planTest{{
 		},
 		Checks:     map[string]*plan.Check{},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	}},
 }, {
 	summary: "Unknown keys are not accepted",
@@ -477,7 +484,7 @@ var planTests = []planTest{{
 	`},
 }, {
 	summary: `Invalid backoff-delay duration`,
-	error:   `cannot parse layer "layer-0": invalid duration "foo"`,
+	error:   `cannot parse layer "layer-0" section "services": invalid duration "foo"`,
 	input: []string{`
 		services:
 			"svc1":
@@ -507,7 +514,7 @@ var planTests = []planTest{{
 	`},
 }, {
 	summary: `Invalid backoff-factor`,
-	error:   `cannot parse layer "layer-0": invalid floating-point number "foo"`,
+	error:   `cannot parse layer "layer-0" section "services": invalid floating-point number "foo"`,
 	input: []string{`
 		services:
 			"svc1":
@@ -544,6 +551,7 @@ var planTests = []planTest{{
 		},
 		Checks:     map[string]*plan.Check{},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	}},
 }, {
 	summary: `Invalid service command: cannot have any arguments after [ ... ] group`,
@@ -652,6 +660,7 @@ var planTests = []planTest{{
 			},
 		},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	},
 }, {
 	summary: "Checks override replace works correctly",
@@ -729,6 +738,7 @@ var planTests = []planTest{{
 			},
 		},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	},
 }, {
 	summary: "Checks override merge works correctly",
@@ -812,6 +822,7 @@ var planTests = []planTest{{
 			},
 		},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	},
 }, {
 	summary: "Timeout is capped at period",
@@ -841,6 +852,7 @@ var planTests = []planTest{{
 			},
 		},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	},
 }, {
 	summary: "Unset timeout is capped at period",
@@ -869,6 +881,7 @@ var planTests = []planTest{{
 			},
 		},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	},
 }, {
 	summary: "One of http, tcp, or exec must be present for check",
@@ -989,6 +1002,7 @@ var planTests = []planTest{{
 				Override: plan.MergeOverride,
 			},
 		},
+		Sections: map[string]plan.Section{},
 	},
 }, {
 	summary: "Overriding log targets",
@@ -1085,6 +1099,7 @@ var planTests = []planTest{{
 				Override: plan.MergeOverride,
 			},
 		},
+		Sections: map[string]plan.Section{},
 	}, {
 		Label: "layer-1",
 		Order: 1,
@@ -1123,6 +1138,7 @@ var planTests = []planTest{{
 				Override: plan.MergeOverride,
 			},
 		},
+		Sections: map[string]plan.Section{},
 	}},
 	result: &plan.Layer{
 		Services: map[string]*plan.Service{
@@ -1168,6 +1184,7 @@ var planTests = []planTest{{
 				Override: plan.MergeOverride,
 			},
 		},
+		Sections: map[string]plan.Section{},
 	},
 }, {
 	summary: "Log target requires type field",
@@ -1277,6 +1294,7 @@ var planTests = []planTest{{
 				},
 			},
 		},
+		Sections: map[string]plan.Section{},
 	}, {
 		Order:    1,
 		Label:    "layer-1",
@@ -1302,6 +1320,7 @@ var planTests = []planTest{{
 				},
 			},
 		},
+		Sections: map[string]plan.Section{},
 	}},
 	result: &plan.Layer{
 		Services: map[string]*plan.Service{},
@@ -1329,6 +1348,7 @@ var planTests = []planTest{{
 				},
 			},
 		},
+		Sections: map[string]plan.Section{},
 	},
 }, {
 	summary: "Reserved log target labels",
@@ -1379,6 +1399,7 @@ var planTests = []planTest{{
 		},
 		Checks:     map[string]*plan.Check{},
 		LogTargets: map[string]*plan.LogTarget{},
+		Sections:   map[string]plan.Section{},
 	},
 }, {
 	summary: "Three layers missing command",
@@ -1427,15 +1448,23 @@ func (s *S) TestParseLayer(c *C) {
 			if err == nil {
 				for name, order := range test.start {
 					p := plan.Plan{Services: result.Services}
-					names, err := p.StartOrder([]string{name})
+					lanes, err := p.StartOrder([]string{name})
 					c.Assert(err, IsNil)
-					c.Assert(names, DeepEquals, order)
+					for _, names := range lanes {
+						if len(names) > 0 {
+							c.Assert(names, DeepEquals, order)
+						}
+					}
 				}
 				for name, order := range test.stop {
 					p := plan.Plan{Services: result.Services}
-					names, err := p.StopOrder([]string{name})
+					lanes, err := p.StopOrder([]string{name})
 					c.Assert(err, IsNil)
-					c.Assert(names, DeepEquals, order)
+					for _, names := range lanes {
+						if len(names) > 0 {
+							c.Assert(names, DeepEquals, order)
+						}
+					}
 				}
 			}
 			if err == nil {
@@ -1444,6 +1473,7 @@ func (s *S) TestParseLayer(c *C) {
 					Services:   result.Services,
 					Checks:     result.Checks,
 					LogTargets: result.LogTargets,
+					Sections:   result.Sections,
 				}
 				err = p.Validate()
 			}
@@ -1486,6 +1516,7 @@ services:
 		Services:   combined.Services,
 		Checks:     combined.Checks,
 		LogTargets: combined.LogTargets,
+		Sections:   combined.Sections,
 	}
 	err = p.Validate()
 	c.Assert(err, ErrorMatches, `services in before/after loop: .*`)
@@ -1526,6 +1557,7 @@ services:
 		Services:   combined.Services,
 		Checks:     combined.Checks,
 		LogTargets: combined.LogTargets,
+		Sections:   combined.Sections,
 	}
 	err = p.Validate()
 	c.Check(err, ErrorMatches, `plan must define "command" for service "srv1"`)
@@ -1565,7 +1597,7 @@ func (s *S) TestReadDir(c *C) {
 			err := os.WriteFile(filepath.Join(layersDir, fmt.Sprintf("%03d-layer-%d.yaml", i, i)), reindent(yml), 0644)
 			c.Assert(err, IsNil)
 		}
-		sup, err := plan.ReadDir(pebbleDir)
+		sup, err := plan.ReadDir(layersDir)
 		if err == nil {
 			var result *plan.Layer
 			result, err = plan.CombineLayers(sup.Layers...)
@@ -1575,15 +1607,23 @@ func (s *S) TestReadDir(c *C) {
 			if err == nil {
 				for name, order := range test.start {
 					p := plan.Plan{Services: result.Services}
-					names, err := p.StartOrder([]string{name})
+					lanes, err := p.StartOrder([]string{name})
 					c.Assert(err, IsNil)
-					c.Assert(names, DeepEquals, order)
+					for _, names := range lanes {
+						if len(names) > 0 {
+							c.Assert(names, DeepEquals, order)
+						}
+					}
 				}
 				for name, order := range test.stop {
 					p := plan.Plan{Services: result.Services}
-					names, err := p.StopOrder([]string{name})
+					lanes, err := p.StopOrder([]string{name})
 					c.Assert(err, IsNil)
-					c.Assert(names, DeepEquals, order)
+					for _, names := range lanes {
+						if len(names) > 0 {
+							c.Assert(names, DeepEquals, order)
+						}
+					}
 				}
 			}
 		}
@@ -1617,7 +1657,7 @@ func (s *S) TestReadDirBadNames(c *C) {
 		fpath := filepath.Join(layersDir, fname)
 		err := os.WriteFile(fpath, []byte("<ignore>"), 0644)
 		c.Assert(err, IsNil)
-		_, err = plan.ReadDir(pebbleDir)
+		_, err = plan.ReadDir(layersDir)
 		c.Assert(err.Error(), Equals, fmt.Sprintf("invalid layer filename: %q (must look like \"123-some-label.yaml\")", fname))
 		err = os.Remove(fpath)
 		c.Assert(err, IsNil)
@@ -1641,7 +1681,7 @@ func (s *S) TestReadDirDupNames(c *C) {
 			err := os.WriteFile(fpath, []byte("summary: ignore"), 0644)
 			c.Assert(err, IsNil)
 		}
-		_, err = plan.ReadDir(pebbleDir)
+		_, err = plan.ReadDir(layersDir)
 		c.Assert(err.Error(), Equals, fmt.Sprintf("invalid layer filename: %q not unique (have %q already)", fnames[1], fnames[0]))
 		for _, fname := range fnames {
 			fpath := filepath.Join(layersDir, fname)
@@ -1869,6 +1909,8 @@ func (s *S) TestMergeServiceContextNoContext(c *C) {
 		Group:       "grp",
 		WorkingDir:  "/working/dir",
 	}
+	// This test ensures an empty service name results in no lookup, and
+	// simply leaves the provided context unchanged.
 	merged, err := plan.MergeServiceContext(nil, "", overrides)
 	c.Assert(err, IsNil)
 	c.Check(merged, DeepEquals, overrides)
@@ -1938,4 +1980,179 @@ func (s *S) TestPebbleLabelPrefixReserved(c *C) {
 	// Validate fails if layer label has the reserved prefix "pebble-"
 	_, err := plan.ParseLayer(0, "pebble-foo", []byte("{}"))
 	c.Check(err, ErrorMatches, `cannot use reserved label prefix "pebble-"`)
+}
+
+func (s *S) TestStartStopOrderSingleLane(c *C) {
+	layer := &plan.Layer{
+		Summary:     "services with dependencies in the same lane",
+		Description: "a simple layer",
+		Services: map[string]*plan.Service{
+			"srv1": {
+				Name:     "srv1",
+				Override: "replace",
+				Command:  `cmd`,
+				Requires: []string{"srv2"},
+				Before:   []string{"srv2"},
+				Startup:  plan.StartupEnabled,
+			},
+			"srv2": {
+				Name:     "srv2",
+				Override: "replace",
+				Command:  `cmd`,
+				Requires: []string{"srv3"},
+				Before:   []string{"srv3"},
+				Startup:  plan.StartupEnabled,
+			},
+			"srv3": {
+				Name:     "srv3",
+				Override: "replace",
+				Command:  `cmd`,
+				Startup:  plan.StartupEnabled,
+			},
+		},
+		Checks:     map[string]*plan.Check{},
+		LogTargets: map[string]*plan.LogTarget{},
+	}
+
+	p := plan.Plan{Services: layer.Services}
+
+	lanes, err := p.StartOrder([]string{"srv1", "srv2", "srv3"})
+	c.Assert(err, IsNil)
+	c.Assert(len(lanes), Equals, 1)
+	c.Assert(lanes[0], DeepEquals, []string{"srv1", "srv2", "srv3"})
+
+	lanes, err = p.StopOrder([]string{"srv1", "srv2", "srv3"})
+	c.Assert(err, IsNil)
+	c.Assert(len(lanes), Equals, 1)
+	c.Assert(lanes[0], DeepEquals, []string{"srv3", "srv2", "srv1"})
+}
+
+func (s *S) TestStartStopOrderMultipleLanes(c *C) {
+	layer := &plan.Layer{
+		Summary:     "services with no dependencies in different lanes",
+		Description: "a simple layer",
+		Services: map[string]*plan.Service{
+			"srv1": {
+				Name:     "srv1",
+				Override: "replace",
+				Command:  `cmd`,
+				Startup:  plan.StartupEnabled,
+			},
+			"srv2": {
+				Name:     "srv2",
+				Override: "replace",
+				Command:  `cmd`,
+				Startup:  plan.StartupEnabled,
+			},
+			"srv3": {
+				Name:     "srv3",
+				Override: "replace",
+				Command:  `cmd`,
+				Startup:  plan.StartupEnabled,
+			},
+		},
+		Checks:     map[string]*plan.Check{},
+		LogTargets: map[string]*plan.LogTarget{},
+	}
+
+	p := plan.Plan{Services: layer.Services}
+
+	lanes, err := p.StartOrder([]string{"srv1", "srv2", "srv3"})
+	c.Assert(err, IsNil)
+	c.Assert(len(lanes), Equals, 3)
+	c.Assert(lanes[0], DeepEquals, []string{"srv1"})
+	c.Assert(lanes[1], DeepEquals, []string{"srv2"})
+	c.Assert(lanes[2], DeepEquals, []string{"srv3"})
+
+	lanes, err = p.StopOrder([]string{"srv1", "srv2", "srv3"})
+	c.Assert(err, IsNil)
+	c.Assert(len(lanes), Equals, 3)
+	c.Assert(lanes[0], DeepEquals, []string{"srv1"})
+	c.Assert(lanes[1], DeepEquals, []string{"srv2"})
+	c.Assert(lanes[2], DeepEquals, []string{"srv3"})
+}
+
+// TestSectionFieldStability detects changes in plan.Layer and plan.Plan
+// YAML fields, and fails on any change that could break hardcoded section
+// fields in the code. On failure, please carefully inspect and update
+// the plan library where required.
+func (s *S) TestSectionFieldStability(c *C) {
+	layerFields := structYamlFields(plan.Layer{})
+	c.Assert(layerFields, testutil.DeepUnsortedMatches, []string{"summary", "description", "services", "checks", "log-targets", "sections"})
+	planFields := structYamlFields(plan.Plan{})
+	c.Assert(planFields, testutil.DeepUnsortedMatches, []string{"services", "checks", "log-targets", "sections"})
+}
+
+// structYamlFields extracts the YAML fields from a struct. If the YAML tag
+// is omitted, the field name with the first letter lower case will be used.
+func structYamlFields(inStruct any) []string {
+	var fields []string
+	inStructType := reflect.TypeOf(inStruct)
+	for i := range inStructType.NumField() {
+		fieldType := inStructType.Field(i)
+		yamlTag := fieldType.Tag.Get("yaml")
+		if fieldType.IsExported() && yamlTag != "-" {
+			tag, _, _ := strings.Cut(fieldType.Tag.Get("yaml"), ",")
+			if tag == "" {
+				tag = firstLetterToLower(fieldType.Name)
+			}
+			fields = append(fields, tag)
+		}
+	}
+	return fields
+}
+
+func firstLetterToLower(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToLower(r[0])
+	return string(r)
+}
+
+// TestSectionOrder ensures built-in section order is maintained
+// during Plan marshal operations.
+func (s *S) TestSectionOrder(c *C) {
+	layer, err := plan.ParseLayer(1, "label", reindent(`
+	checks:
+		chk1:
+			override: replace
+			exec:
+				command: ping 8.8.8.8
+	log-targets:
+		lt1:
+			override: replace
+			type: loki
+			location: http://192.168.1.2:3100/loki/api/v1/push
+	services:
+		srv1:
+			override: replace
+			command: cmd`))
+	c.Assert(err, IsNil)
+	combined, err := plan.CombineLayers(layer)
+	c.Assert(err, IsNil)
+	plan := plan.Plan{
+		Services:   combined.Services,
+		Checks:     combined.Checks,
+		LogTargets: combined.LogTargets,
+	}
+	data, err := yaml.Marshal(plan)
+	c.Assert(string(data), Equals, string(reindent(`
+	services:
+		srv1:
+			override: replace
+			command: cmd
+	checks:
+		chk1:
+			override: replace
+			threshold: 3
+			exec:
+				command: ping 8.8.8.8
+	log-targets:
+		lt1:
+			type: loki
+			location: http://192.168.1.2:3100/loki/api/v1/push
+			services: []
+			override: replace`)))
 }

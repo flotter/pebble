@@ -62,6 +62,10 @@ type Options struct {
 	// Dir is the pebble directory where all setup is found. Defaults to /var/lib/pebble/default.
 	Dir string
 
+	// LayersDir is an optional path for the layers directory.
+	// Defaults to "layers" inside the pebble directory.
+	LayersDir string
+
 	// SocketPath is an optional path for the unix socket used for the client
 	// to communicate with the daemon. Defaults to a hidden (dotted) name inside
 	// the pebble directory.
@@ -246,9 +250,9 @@ func (c *Command) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if rsp.Type != ResponseTypeError {
 			st := c.d.state
 			st.Lock()
-			count, stamp := st.WarningsSummary()
+			latest := st.LatestWarningTime()
 			st.Unlock()
-			rsp.addWarningsToMeta(count, stamp)
+			rsp.addWarningsToMeta(latest)
 		}
 	}
 
@@ -836,6 +840,7 @@ func New(opts *Options) (*Daemon, error) {
 
 	ovldOptions := overlord.Options{
 		PebbleDir:      opts.Dir,
+		LayersDir:      opts.LayersDir,
 		RestartHandler: d,
 		ServiceOutput:  opts.ServiceOutput,
 		Extension:      opts.OverlordExtension,

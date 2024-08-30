@@ -68,6 +68,8 @@ type Extension interface {
 type Options struct {
 	// PebbleDir is the path to the pebble directory. It must be provided.
 	PebbleDir string
+	// LayersDir is the path to the layers directory. It defaults to "<PebbleDir>/layers" if empty.
+	LayersDir string
 	// RestartHandler is an optional structure to handle restart requests.
 	RestartHandler restart.Handler
 	// ServiceOutput is an optional output for the logging manager.
@@ -122,6 +124,10 @@ func New(opts *Options) (*Overlord, error) {
 	if !osutil.IsDir(o.pebbleDir) {
 		return nil, fmt.Errorf("directory %q does not exist", o.pebbleDir)
 	}
+	if !osutil.IsWritable(o.pebbleDir) {
+		return nil, fmt.Errorf("directory %q not writable", o.pebbleDir)
+	}
+
 	statePath := filepath.Join(o.pebbleDir, cmd.StateFile)
 
 	backend := &overlordStateBackend{
@@ -145,7 +151,11 @@ func New(opts *Options) (*Overlord, error) {
 	o.restartMgr = restartMgr
 	o.stateEng.AddManager(restartMgr)
 
-	o.planMgr, err = planstate.NewManager(o.pebbleDir)
+	layersDir := opts.LayersDir
+	if layersDir == "" {
+		layersDir = filepath.Join(opts.PebbleDir, "layers")
+	}
+	o.planMgr, err = planstate.NewManager(layersDir)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create plan manager: %w", err)
 	}
@@ -250,7 +260,6 @@ func loadState(statePath string, restartHandler restart.Handler, backend state.B
 		patch.Init(s)
 		return s, restartMgr, nil
 	}
-
 	r, err := os.Open(statePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot read the state file: %s", err)
@@ -328,22 +337,49 @@ func (o *Overlord) ensureBefore(d time.Duration) {
 	o.ensureLock.Lock()
 	defer o.ensureLock.Unlock()
 	if o.ensureTimer == nil {
-		panic("cannot use EnsureBefore before Overlord.Loop")
+		// While the timer is not setup we have not yet entered the overlord loop.
+		// Since the overlord loop will unconditionally perform an ensure on entry,
+		// the ensure is already scheduled.
+		return
 	}
 	now := time.Now()
 	next := now.Add(d)
+
+	// If this requested ensure must take place before the currently scheduled
+	// ensure time, let's reschedule the pending ensure.
 	if next.Before(o.ensureNext) {
 		o.ensureTimer.Reset(d)
 		o.ensureNext = next
 		return
 	}
 
+	// Go timers do not take sleep/suspend time into account (CLOCK_MONOTONIC,
+	// not CLOCK_BOOTTIME). This means that following a wakeup, the timer will
+	// only then continue to countdown, while the o.ensureNext wallclock time
+	// could point to a time that already expired.
+	// https://github.com/golang/go/issues/24595
+	// 1. https://github.com/canonical/snapd/pull/1150
+	// 2. https://github.com/canonical/snapd/pull/6472
+	//
+	// If we detect a wake-up condition where the scheduled expiry time is in
+	// the past, let's reschedule the ensure to happen right now.
 	if o.ensureNext.Before(now) {
-		// timer already expired, it will be reset in Loop() and
-		// next Ensure() will be called shortly.
+		// We have to know if the timer already expired. If this is true then
+		// it means a channel write has already taken place, and no further
+		// action is required. The overlord loop will ensure soon after this:
+		//
+		// https://go.dev/wiki/Go123Timer:
+		// <  Go 1.23: buffered channel   (overlord loop may not have observed yet)
+		// >= Go 1.23: unbuffered channel (overlord loop already observed)
+		//
+		// In both these cases, the overlord loop ensure will still take place.
 		if !o.ensureTimer.Stop() {
 			return
 		}
+		// Since the scheduled time was reached, and the timer did not expire
+		// before we called stop, we know that due to a sleep/suspend activity
+		// the real timer will expire at some arbitrary point in the future.
+		// Instead, let's get that ensure completed right now.
 		o.ensureTimer.Reset(0)
 		o.ensureNext = now
 	}
