@@ -1,0 +1,6 @@
+#/bin/bash -e
+
+PROFILE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "Shutting down Loki ..."
+pkill -TERM loki-linux

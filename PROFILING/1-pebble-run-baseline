@@ -1,0 +1,46 @@
+#/bin/bash -e
+#
+# Produce a binary suitable for shutdown benchmarking.
+
+PROFILE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PEBBLE_DIR="$(dirname "$PROFILE_DIR")"
+PEBBLE_EXE="$PEBBLE_DIR/pebble"
+
+# Pebble state / config directory
+PEBBLE="$PROFILE_DIR/pebble-state"
+
+# Exit with an error message
+exit_error() {
+	echo "error: $1"
+	exit 1
+}
+
+exit_handler() {
+	:
+}
+
+trap exit_handler EXIT
+
+# Check we have go snap installed.
+echo "Checking if go is installed ..."
+if ! snap list go > /dev/null 2>&1 ; then exit_error "golang compiler snap missing"; fi
+
+# Check we are using v1.24.
+echo "Checking go version ..."
+if [ "$(snap list go | tail -n1 | awk '{print $4}')" != "1.24/stable" ]; then exit_error "golang v1.24 missing"; fi
+
+# Setup state directory
+echo "Setup pebble state directory $PEBBLE ..."
+rm -rf "$PEBBLE"
+mkdir -p "$PEBBLE/layers"
+
+# Build pebble.
+echo "Building pebble ..."
+pushd "$PEBBLE_DIR" > /dev/null
+go build ./cmd/pebble
+popd > /dev/null
+
+# Run pebble.
+echo "Running pebble ..."
+echo
+PEBBLE="$PEBBLE" "$PEBBLE_EXE" run --create-dirs --http=:8888 --https=:8443 --verbose

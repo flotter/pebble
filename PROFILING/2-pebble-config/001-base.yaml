@@ -1,0 +1,5 @@
+services:
+  writer1:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer1"
+    startup: enabled

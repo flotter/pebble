@@ -1,0 +1,48 @@
+services:
+  writer1:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer1 -t MSGRATE"
+    startup: enabled
+  writer2:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer2 -t MSGRATE"
+    startup: enabled
+  writer3:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer3 -t MSGRATE"
+    startup: enabled
+  writer4:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer4 -t MSGRATE"
+    startup: enabled
+  writer5:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer5 -t MSGRATE"
+    startup: enabled
+  writer6:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer6 -t MSGRATE"
+    startup: enabled
+  writer7:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer7 -t MSGRATE"
+    startup: enabled
+  writer8:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer8 -t MSGRATE"
+    startup: enabled
+  writer9:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer9 -t MSGRATE"
+    startup: enabled
+  writer10:
+    override: replace
+    command: bash -c "app-log-writer/log-writer --prefix writer10 -t MSGRATE"
+    startup: enabled
+
+log-targets:
+  test:
+    override: replace
+    type: loki
+    location: http://localhost:3100/loki/api/v1/push
+    services: [all] 

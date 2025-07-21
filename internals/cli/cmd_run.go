@@ -35,6 +35,7 @@ import (
 	"github.com/canonical/pebble/internals/reaper"
 	"github.com/canonical/pebble/internals/systemd"
 	"github.com/canonical/pebble/internals/workloads"
+	"github.com/canonical/pebble/internals/profiler"
 )
 
 const cmdRunSummary = "Run the service manager environment"
@@ -98,6 +99,12 @@ func (rcmd *cmdRun) Execute(args []string) error {
 	if len(args) > 0 {
 		return ErrExtraArgs
 	}
+
+	defer func() {
+		profiler.ShutdownStopMarker()
+	}()
+
+	profiler.StartupStartMarker()
 
 	rcmd.run(nil)
 
@@ -278,6 +285,10 @@ func runDaemon(rcmd *cmdRun, ch chan os.Signal, ready chan<- func()) error {
 		// Start the default services (those configured with startup: enabled).
 		servopts := client.ServiceOptions{}
 		changeID, err := rcmd.client.AutoStart(&servopts)
+
+		// Once the client API returns, we know the last of the daemon and overlord is running.
+		profiler.StartupStopMarker()
+
 		if err != nil {
 			logger.Noticef("Cannot start default services: %v", err)
 		} else {
@@ -304,6 +315,8 @@ out:
 	for {
 		select {
 		case sig := <-ch:
+			profiler.ShutdownStartMarker()
+
 			logger.Noticef("Exiting on %s signal.\n", sig)
 			break out
 		case <-d.Dying():
@@ -372,3 +385,4 @@ func maybeCopyPebbleDir(destDir, srcDir string) error {
 	}
 	return nil
 }
+

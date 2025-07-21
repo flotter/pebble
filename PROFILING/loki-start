@@ -1,0 +1,20 @@
+#/bin/bash -e
+
+PROFILE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOKI_DIR="$PROFILE_DIR/app-loki-utils"
+
+echo "Shutting down Loki ..."
+pkill -TERM loki-linux
+
+echo "Downloading Loki binary in $LOKI_DIR ..."
+pushd "$LOKI_DIR" > /dev/null
+rm -f loki-linux-amd64*
+rm -f logcli-linux-amd64*
+wget -q https://github.com/grafana/loki/releases/download/v3.5.2/loki-linux-amd64.zip
+wget -q https://github.com/grafana/loki/releases/download/v3.5.2/logcli-linux-amd64.zip
+unzip loki-linux-amd64.zip
+unzip logcli-linux-amd64.zip
+popd > /dev/null
+
+echo "Running Loki ..."
+"$LOKI_DIR/loki-linux-amd64" -config.file="$LOKI_DIR/loki-local-config.yaml" > /dev/null 2>&1 &

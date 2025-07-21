@@ -1,0 +1,13 @@
+#/bin/bash -e
+
+PROFILE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PEBBLE_DIR="$(dirname "$PROFILE_DIR")"
+PEBBLE_EXE="$PEBBLE_DIR/pebble"
+
+# Pebble state directory
+PEBBLE="$PROFILE_DIR/pebble-state"
+
+echo "Running EXEC (Unix socket) ..."
+
+time PEBBLE="$PEBBLE" "$PEBBLE_EXE" exec /bin/busybox sh
+
