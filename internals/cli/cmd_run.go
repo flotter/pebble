@@ -36,6 +36,7 @@ import (
 	"github.com/canonical/pebble/internals/reaper"
 	"github.com/canonical/pebble/internals/systemd"
 	"github.com/canonical/pebble/internals/workloads"
+	"github.com/canonical/pebble/internals/overlord/pairingstate"
 )
 
 const cmdRunSummary = "Run the service manager environment"
@@ -189,6 +190,7 @@ func runDaemon(rcmd *cmdRun, ch chan os.Signal, ready chan<- func()) error {
 		return err
 	}
 
+	plan.RegisterSectionExtension(pairingstate.PairingField, &pairingstate.SectionExtension{})
 	plan.RegisterSectionExtension(workloads.WorkloadsField, &workloads.WorkloadsSectionExtension{})
 
 	idPath := filepath.Join(rcmd.pebbleDir, "identity")
